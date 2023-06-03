@@ -241,12 +241,44 @@ fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSe
 }
 
 async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: SyncSender<String>) -> Result<(), String> {
-    // let mut mqttoptions = MqttOptions::new("beelay-service", "localhost", 1883);
-    // let (mut client, mut connection) = AsyncClient::new(mqttoptions, 10);
-    // client.subscribe("zigbee2mqtt/#", QoS::AtMostOnce).await.unwrap();
+    const MQTT_HOST: &str = "localhost";
+    const MQTT_PORT: u16 = 1883;
 
-    loop {
-        info!("Got {}!", http_receive.recv().unwrap());
+    info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
+    let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
+    let (mut client, mut connection) = AsyncClient::new(mqttoptions, 10);
+
+    info!("Subscribing to all zigbee2mqtt messages");
+    client.subscribe("zigbee2mqtt/#", QoS::AtMostOnce).await.unwrap();
+
+    let mut should_run = true;
+
+    while should_run {
+        let http_msg = http_receive.recv().unwrap();
+        let mut command: Option<String> = None;
+        let mut switch_name: Option<String> = None;
+        let mut new_state: Option<String> = None;
+        for token in http_msg.split("=") {
+            if command.is_none() {
+                command = Some(token.to_string());
+            }
+            else if switch_name.is_none() {
+                switch_name = Some(token.to_string());
+            }
+            else {
+                new_state = Some(token.to_string());
+            }
+        }
+        let command = command.unwrap();
+        match command.as_str() {
+            "set" => {
+                let switch_name = switch_name.unwrap();
+                let new_state = new_state.unwrap();
+                client.publish(format!("zigbee2mqtt/{}/set", switch_name), QoS::AtLeastOnce, false, new_state).await;
+            },
+            _ => panic!("Got unrecognized command {}", command)
+        }
+        
     }
 
     Ok(())
