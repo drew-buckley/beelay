@@ -235,7 +235,7 @@ fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSe
         Err(poisoned) => poisoned.into_inner()
     };
 
-    guard.send(format!("{}={}", switch_name, new_state))
+    guard.send(format!("set,{},{}", switch_name, new_state))
         .expect("Channel is down!");
     Ok(())
 }
@@ -255,10 +255,11 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
 
     while should_run {
         let http_msg = http_receive.recv().unwrap();
+        info!("MQTT service got message: {}", http_msg);
         let mut command: Option<String> = None;
         let mut switch_name: Option<String> = None;
         let mut new_state: Option<String> = None;
-        for token in http_msg.split("=") {
+        for token in http_msg.split(",") {
             if command.is_none() {
                 command = Some(token.to_string());
             }
