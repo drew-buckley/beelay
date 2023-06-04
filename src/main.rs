@@ -8,6 +8,8 @@ use std::borrow::Cow;
 use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::thread::{self, sleep};
 use std::str;
+use std::path::Path;
+use std::fs;
 use log::{debug, error, info, log_enabled, warn};
 use clap::Parser;
 use hyper::{Body, Request, Response, Server, Uri};
@@ -18,6 +20,7 @@ use rumqttc::{MqttOptions, Client, AsyncClient, QoS};
 use rumqttc::Event::Incoming;
 use rumqttc::Packet::Publish;
 use serde_json;
+use serde::{Deserialize};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -27,20 +30,27 @@ struct Args {
     config: String,
 
     // IP address which to bind the server to.
-    #[clap(short, long, default_value = "0.0.0.0")]
-    address: String,
+    #[clap(short, long)]
+    address: Option<String>,
 
     // Listening port for the server.
-    #[clap(short, long, default_value = "9999")]
-    port: String,
+    #[clap(short, long)]
+    port: Option<String>,
 
     // Comma delimited list of named switches to whitelist.
-    #[clap(short, long, default_value = "")]
-    switches: String,
+    #[clap(short, long)]
+    switches: Option<String>,
 
     /// Use syslog.
    #[clap(long, action)]
    syslog: bool
+}
+
+#[derive(Deserialize, Clone)]
+struct Config {
+    address: Option<String>,
+    port: Option<String>,
+    switches: Option<String>
 }
 
 enum OperationStatus {
@@ -54,13 +64,45 @@ async fn main() {
 
     init_logging(args.syslog);
 
+    let default_config = Config {
+        address: Some("0.0.0.0".to_string()),
+        port: Some("9999".to_string()),
+        switches: None
+    };
+
+    let mut config: Config;
+    if Path::new(args.config.as_str()).exists() {
+        config = toml::from_str(fs::read_to_string(args.config)
+            .expect("Failed to load config TOML.").as_str())
+            .expect("Failed to parse config TOML.");
+    }
+    else {
+        config = default_config.clone();
+    }
+
+    if args.address.is_some() {
+        config.address = args.address;
+    }
+
+    if args.port.is_some() {
+        config.port = args.port;
+    }
+
+    if args.switches.is_some() {
+        config.switches = args.switches;
+    }
+
+    let switches_str = config.switches.unwrap();
+    let address = config.address.unwrap();
+    let port = config.port.unwrap();
+
     let mut switches: Vec<String> = Vec::new();
-    for switch in args.switches.split(',') {
+    for switch in switches_str.split(',') {
         switches.push(switch.to_string())
     }
     
     let switches = switches;
-    let addr: SocketAddr = (args.address + ":" + &args.port)
+    let addr: SocketAddr = (address + ":" + &port)
         .parse()
         .expect("Unable to parse socket address.");
 

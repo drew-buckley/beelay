@@ -1,0 +1,15 @@
+[Unit]
+After=network.target
+Description=Beelay HTTP to MQTT Bridge
+DefaultDependencies=no
+
+[Service]
+Type=exec
+ExecStart=beelay
+Restart=on-failure
+KillMode=process
+SendSIGKILL=no
+
+[Install]
+WantedBy=multi-user.target
+Alias=beelay.service
