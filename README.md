@@ -1,5 +1,5 @@
 # beelay
-This program is a simple webserver that provides a HTTP API for control of Zigbee smart switches. I made this to control my SONOFF from a Raspberry Pi and as an excuse to get some Rust learning in. Its pretty hacky at the moment, but it does work fairly reliably. The one exception to this is the `GET`s are kind of broken... They "work", but they take a couple seconds to reply. If I get some time sometime soon, I'll hopefully clean this up and fix the `GET`s. 
+This program is a simple webserver that provides a HTTP API for control of Zigbee smart switches. I made this to control my fleet of SONOFF Zigbee switches from a Raspberry Pi and as an excuse to get some Rust learning in. Its pretty hacky at the moment, but it does work fairly reliably. The one exception to this is the `GET`s are kind of broken... They "work", but they take a couple seconds to reply. If I get some time sometime soon, I'll hopefully clean this up and fix the `GET`s. No idea if this works with other Zigbee smart switches.
 
 Here's some examples of its use:
 ```
