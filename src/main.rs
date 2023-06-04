@@ -390,7 +390,6 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
             Incoming(incoming) => {
                 match incoming {
                     Publish(publish) => {
-                        info!("{}", str::from_utf8(&publish.payload).unwrap());
                         let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
                         let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
                         if let Some(state_value) = payload.get("state") {
@@ -411,11 +410,6 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
             }
 
             break;
-        }
-
-        info!("{}", notification_str);
-        if notification_str.contains("PubAck") {
-            // break;
         }
     }
 
