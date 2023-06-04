@@ -12,4 +12,3 @@ SendSIGKILL=no
 
 [Install]
 WantedBy=multi-user.target
-Alias=beelay.service
