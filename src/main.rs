@@ -3,10 +3,11 @@ use std::{convert::Infallible, net::SocketAddr};
 use std::io::Write;
 use std::result::Result;
 use std::sync::{Arc, Mutex};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::borrow::Cow;
 use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::thread::{self, sleep};
+use std::str;
 use log::{debug, error, info, log_enabled, warn};
 use clap::Parser;
 use hyper::{Body, Request, Response, Server, Uri};
@@ -14,6 +15,9 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use http::Method;
 use rumqttc::{MqttOptions, Client, AsyncClient, QoS};
+use rumqttc::Event::Incoming;
+use rumqttc::Packet::Publish;
+use serde_json;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -72,6 +76,7 @@ async fn main() {
 
     let mqtt_send = Arc::new(Mutex::new(mqtt_send));
     let mqtt_receive = Arc::new(Mutex::new(mqtt_receive));
+    let http_send = Arc::new(Mutex::new(http_send));
 
     tokio::spawn(async move {
         if let Err(e) = perform_mqtt_client_service(http_receive, http_send).await {
@@ -167,7 +172,7 @@ async fn handle(switches: Arc<Vec<String>>, _addr: SocketAddr, req: Request<Body
             let method = req.method().clone();
             match method {
                 Method::GET => {
-                    match fetch_switch_state(switch_name.as_ref().unwrap()) {
+                    match fetch_switch_state(switch_name.as_ref().unwrap(), mqtt_send.as_ref(), mqtt_receive.as_ref()) {
                         Ok(state) => fetched_state_value = Some(state),
                         Err(reason) => status = OperationStatus::Failed(reason)
                     }
@@ -225,9 +230,30 @@ fn generate_json_response(op_status: &OperationStatus, switch_state: Option<Stri
     Ok(json_respose)
 }
 
-fn fetch_switch_state(switch_name: &str) -> Result<String, String> {
+fn fetch_switch_state(switch_name: &str, mqtt_send: &Mutex<SyncSender<String>>, mqtt_receive: &Mutex<Receiver<String>>) -> Result<String, String> {
     info!("Fetching state for {}", switch_name);
-    Ok("ON".to_string())
+
+    {
+        let mut guard = match mqtt_send.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner()
+        };
+        
+        guard.send(format!("get,{}", switch_name))
+            .expect("Channel is down!");
+    }
+
+    let mut state: String = "".to_string();    
+    {
+        let mut guard = match mqtt_receive.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner()
+        };
+        
+        state = guard.recv().unwrap();
+    }
+
+    Ok(state)
 }
 
 fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSender<String>>) -> Result<(), String> {
@@ -244,7 +270,7 @@ fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSe
     Ok(())
 }
 
-async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: SyncSender<String>) -> Result<(), String> {
+async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: Arc<Mutex<SyncSender<String>>>) -> Result<(), String> {
     let mut should_run = Mutex::new(true);
     loop {
         let should_run_next_loop: bool;
@@ -274,10 +300,11 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
             }
         }
         let command = command.unwrap();
+        let http_send = Arc::clone(&http_send);
         match command.as_str() {
             _ => {
                 thread::spawn(move || {
-                    if let Err(err) = perform_mqtt_transaction(switch_name.unwrap().as_str(), &new_state) {
+                    if let Err(err) = perform_mqtt_transaction(switch_name.unwrap().as_str(), &new_state, Arc::clone(&http_send)) {
                         error!("{}", err);
                     }
                 });
@@ -288,13 +315,14 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
     Ok(())
 }
 
-fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>)  -> Result<(), String> {
+fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_send: Arc<Mutex<SyncSender<String>>>)  -> Result<(), String> {
     const MQTT_HOST: &str = "localhost";
     const MQTT_PORT: u16 = 1883;
 
     info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
     let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
     let (mut client, mut connection) = Client::new(mqttoptions, 10);
+    client.subscribe(format!("zigbee2mqtt/{}", switch_name), QoS::AtMostOnce).unwrap();
     match new_state {
         Some(new_state) => {
             let topic = format!("zigbee2mqtt/{}/set", switch_name);
@@ -306,7 +334,7 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>)  -> R
         None => {
             let topic = format!("zigbee2mqtt/{}/get", switch_name);
             info!("Sending {}", topic);
-            if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, "") {
+            if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, "{}") {
                 error!("{}", e);
             }
         }
@@ -314,8 +342,38 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>)  -> R
 
     for (i, notification) in connection.iter().enumerate() {
         let notification_str = format!("Notification = {:?}", notification);
-        if notification_str.contains("PubAck") {
+        let event = notification.unwrap();
+        let mut state: Option<String> = None;
+        match event {
+            Incoming(incoming) => {
+                match incoming {
+                    Publish(publish) => {
+                        info!("{}", str::from_utf8(&publish.payload).unwrap());
+                        let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
+                        let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
+                        if let Some(state_value) = payload.get("state") {
+                            state = Some(state_value.as_str().unwrap().to_string());
+                        }
+                    }
+                    _ => ()
+                }
+            },
+            _ => ()
+        }
+
+        if let Some(state) = state {
+            if new_state.is_none() {
+                if let Ok(guard) = http_send.as_ref().lock() {
+                    guard.send(state);
+                }
+            }
+
             break;
+        }
+
+        info!("{}", notification_str);
+        if notification_str.contains("PubAck") {
+            // break;
         }
     }
 
