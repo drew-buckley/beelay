@@ -100,7 +100,7 @@ async fn main() {
     for switch in switches_str.split(',') {
         switches.push(switch.to_string())
     }
-    
+
     let switches = switches;
     let addr: SocketAddr = (address + ":" + &port)
         .parse()
@@ -417,80 +417,6 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
         if notification_str.contains("PubAck") {
             // break;
         }
-    }
-
-    Ok(())
-}
-
-async fn _perform_mqtt_client_service(http_receive: Receiver<String>, http_send: SyncSender<String>) -> Result<(), String> {
-    const MQTT_HOST: &str = "localhost";
-    const MQTT_PORT: u16 = 1883;
-
-    info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
-    let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
-    let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 50);
-
-    info!("Subscribing to all zigbee2mqtt messages");
-    client.subscribe("zigbee2mqtt/#", QoS::AtMostOnce).await.unwrap();
-
-    let mut should_run = Mutex::new(true);
-    
-    tokio::spawn(async move {
-        loop {
-            let should_run_next_loop: bool;
-            match should_run.lock() {
-                Ok(guard) => should_run_next_loop = *guard,
-                Err(_) => should_run_next_loop = false
-            };
-
-            if !should_run_next_loop {
-                break;
-            }
-
-            let http_msg = http_receive.recv().unwrap();
-            info!("MQTT service got message: {}", http_msg);
-            let mut command: Option<String> = None;
-            let mut switch_name: Option<String> = None;
-            let mut new_state: Option<String> = None;
-            for token in http_msg.split(",") {
-                if command.is_none() {
-                    command = Some(token.to_string());
-                }
-                else if switch_name.is_none() {
-                    switch_name = Some(token.to_string());
-                }
-                else {
-                    new_state = Some(token.to_string());
-                }
-            }
-            let command = command.unwrap();
-            match command.as_str() {
-                "set" => {
-                    let switch_name = switch_name.unwrap();
-                    let new_state = new_state.unwrap();
-                    let topic = format!("zigbee2mqtt/{}/set", switch_name);
-                    info!("Sending {} ---> {}", topic, new_state);
-                    if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, new_state).await {
-                        error!("{}", e);
-                    }
-                    info!("Sent!");
-                },
-                _ => panic!("Got unrecognized command {}", command)
-            }
-        }
-    });
-
-    loop {
-        info!("Waiting for next notification");
-        match eventloop.poll().await {
-            Ok(notification) => {
-                info!("Received = {:?}", notification);
-            },
-            Err(err) => {
-                error!("{}", err);
-            }
-        }
-        
     }
 
     Ok(())
