@@ -5,7 +5,7 @@ DefaultDependencies=no
 
 [Service]
 Type=exec
-ExecStart=beelay
+ExecStart=beelay --syslog
 Restart=on-failure
 KillMode=process
 SendSIGKILL=no

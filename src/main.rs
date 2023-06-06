@@ -1,3 +1,4 @@
+use std::fmt::write;
 use std::ptr::slice_from_raw_parts_mut;
 use std::{convert::Infallible, net::SocketAddr};
 use std::io::Write;
@@ -9,7 +10,7 @@ use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::thread::{self, sleep};
 use std::str;
 use std::path::Path;
-use std::fs;
+use std::fs::{self, File};
 use log::{debug, error, info, log_enabled, warn};
 use clap::Parser;
 use hyper::{Body, Request, Response, Server, Uri};
@@ -57,6 +58,8 @@ enum OperationStatus {
     Succeeded,
     Failed(String)
 }
+
+const RUN_DIR: &str = "/run/beelay";
 
 #[tokio::main]
 async fn main() {
@@ -119,6 +122,11 @@ async fn main() {
     let mqtt_send = Arc::new(Mutex::new(mqtt_send));
     let mqtt_receive = Arc::new(Mutex::new(mqtt_receive));
     let http_send = Arc::new(Mutex::new(http_send));
+
+    let run_dir = Path::new(RUN_DIR);
+    if !run_dir.exists() {
+        std::fs::create_dir_all(&run_dir).unwrap();
+    }
 
     tokio::spawn(async move {
         if let Err(e) = perform_mqtt_client_service(http_receive, http_send).await {
@@ -357,14 +365,18 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
     Ok(())
 }
 
-fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_send: Arc<Mutex<SyncSender<String>>>)  -> Result<(), String> {
-    const MQTT_HOST: &str = "localhost";
-    const MQTT_PORT: u16 = 1883;
+const MQTT_HOST: &str = "localhost";
+const MQTT_PORT: u16 = 1883;
 
+fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_send: Arc<Mutex<SyncSender<String>>>)  -> Result<(), String> {
     info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
     let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
     let (mut client, mut connection) = Client::new(mqttoptions, 10);
     client.subscribe(format!("zigbee2mqtt/{}", switch_name), QoS::AtMostOnce).unwrap();
+
+    let run_dir = Path::new(RUN_DIR);
+    let state_file_buffer = run_dir.join(switch_name);
+    let state_file = state_file_buffer.as_path();
     match new_state {
         Some(new_state) => {
             let topic = format!("zigbee2mqtt/{}/set", switch_name);
@@ -372,13 +384,30 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
             if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, new_state.as_str()) {
                 error!("{}", e);
             }
+            let mut state_file_out = File::create(state_file).unwrap();
+            write!(state_file_out, "{}", new_state);
         }
         None => {
-            let topic = format!("zigbee2mqtt/{}/get", switch_name);
-            info!("Sending {}", topic);
-            if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, "{}") {
-                error!("{}", e);
+            // let topic = format!("zigbee2mqtt/{}/get", switch_name);
+            // info!("Sending {}", topic);
+            // if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, "{}") {
+            //     error!("{}", e);
+            // }
+            // The above doesn't work for some reason; commenting out for now and replacing
+            // with a hack.
+            let retrieved_state = fs::read_to_string(state_file);
+            
+            if new_state.is_none() {
+                if let Ok(guard) = http_send.as_ref().lock() {
+                    if let Ok(state) = retrieved_state {
+                        guard.send(state);
+                    }
+                    else {
+                        guard.send("OFF".to_string());
+                    }
+                }
             }
+            return Ok(())
         }
     }
 
