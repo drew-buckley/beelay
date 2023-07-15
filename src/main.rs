@@ -59,7 +59,7 @@ enum OperationStatus {
     Failed(String)
 }
 
-const RUN_DIR: &str = "/run/beelay";
+const RUN_DIR: &str = "/run/beelay_test";
 
 #[tokio::main]
 async fn main() {
@@ -131,6 +131,14 @@ async fn main() {
     tokio::spawn(async move {
         if let Err(e) = perform_mqtt_client_service(http_receive, http_send).await {
             error!("Service error: {}", e);
+        }
+    });
+
+    let switches_clone = switches.clone();
+    thread::spawn(move || {
+        
+        if let Err(err) = listen_for_state(switches_clone) {
+            error!("{}", err);
         }
     });
 
@@ -367,6 +375,7 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
 
 const MQTT_HOST: &str = "localhost";
 const MQTT_PORT: u16 = 1883;
+const ZIGBEE2MQTT_TOPIC: &str = "zigbee2mqtt";
 
 fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_send: Arc<Mutex<SyncSender<String>>>)  -> Result<(), String> {
     info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
@@ -384,8 +393,6 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
             if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, new_state.as_str()) {
                 error!("{}", e);
             }
-            let mut state_file_out = File::create(state_file).unwrap();
-            write!(state_file_out, "{}", new_state);
         }
         None => {
             // let topic = format!("zigbee2mqtt/{}/get", switch_name);
@@ -439,6 +446,44 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
             }
 
             break;
+        }
+    }
+
+    Ok(())
+}
+
+fn listen_for_state(switches: Vec<String>)  -> Result<(), String> {
+    info!("Listening to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
+    let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
+    let (mut client, mut connection) = Client::new(mqttoptions, 10);
+
+    for switch in switches {
+        client.subscribe(format!("{}/{}", ZIGBEE2MQTT_TOPIC, switch), QoS::AtMostOnce).unwrap();
+    }
+
+    let run_dir = Path::new(RUN_DIR);
+    for (i, notification) in connection.iter().enumerate() {
+        let event = notification.unwrap();
+        match event {
+            Incoming(incoming) => {
+                match incoming {
+                    Publish(publish) => {
+                        let switch_name = &publish.topic[ZIGBEE2MQTT_TOPIC.len()+1..publish.topic.len()];
+                        info!("Got packet for {}", switch_name);
+                        let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
+                        let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
+                        if let Some(state_value) = payload.get("state") {
+                            let state = state_value.as_str().unwrap().to_string();
+                            let state_file_buffer = run_dir.join(switch_name);
+                            let state_file = state_file_buffer.as_path();
+                            let mut state_file_out = File::create(state_file).unwrap();
+                            write!(state_file_out, "{}", state);
+                        }
+                    }
+                    _ => ()
+                }
+            },
+            _ => ()
         }
     }
 
