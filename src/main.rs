@@ -59,7 +59,7 @@ enum OperationStatus {
     Failed(String)
 }
 
-const RUN_DIR: &str = "/run/beelay_test";
+const RUN_DIR: &str = "/run/beelay";
 
 #[tokio::main]
 async fn main() {
