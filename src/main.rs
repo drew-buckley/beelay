@@ -453,37 +453,45 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
 }
 
 fn listen_for_state(switches: Vec<String>)  -> Result<(), String> {
-    info!("Listening to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
-    let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
-    let (mut client, mut connection) = Client::new(mqttoptions, 10);
+    while true {
+        info!("Listening to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
+        let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
+        let (mut client, mut connection) = Client::new(mqttoptions, 10);
 
-    for switch in switches {
-        client.subscribe(format!("{}/{}", ZIGBEE2MQTT_TOPIC, switch), QoS::AtMostOnce).unwrap();
-    }
+        for switch in &switches {
+            client.subscribe(format!("{}/{}", ZIGBEE2MQTT_TOPIC, switch), QoS::AtMostOnce).unwrap();
+        }
 
-    let run_dir = Path::new(RUN_DIR);
-    for (i, notification) in connection.iter().enumerate() {
-        let event = notification.unwrap();
-        match event {
-            Incoming(incoming) => {
-                match incoming {
-                    Publish(publish) => {
-                        let switch_name = &publish.topic[ZIGBEE2MQTT_TOPIC.len()+1..publish.topic.len()];
-                        info!("Got packet for {}", switch_name);
-                        let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
-                        let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
-                        if let Some(state_value) = payload.get("state") {
-                            let state = state_value.as_str().unwrap().to_string();
-                            let state_file_buffer = run_dir.join(switch_name);
-                            let state_file = state_file_buffer.as_path();
-                            let mut state_file_out = File::create(state_file).unwrap();
-                            write!(state_file_out, "{}", state);
-                        }
-                    }
-                    _ => ()
+        let run_dir = Path::new(RUN_DIR);
+        for (i, notification) in connection.iter().enumerate() {
+            let event = match notification {
+                Ok(event) => event,
+                Err(err) => {
+                    error!("Error during listening: {}", err);
+                    break;
                 }
-            },
-            _ => ()
+            };
+            match event {
+                Incoming(incoming) => {
+                    match incoming {
+                        Publish(publish) => {
+                            let switch_name = &publish.topic[ZIGBEE2MQTT_TOPIC.len()+1..publish.topic.len()];
+                            info!("Got packet for {}", switch_name);
+                            let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
+                            let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
+                            if let Some(state_value) = payload.get("state") {
+                                let state = state_value.as_str().unwrap().to_string();
+                                let state_file_buffer = run_dir.join(switch_name);
+                                let state_file = state_file_buffer.as_path();
+                                let mut state_file_out = File::create(state_file).unwrap();
+                                write!(state_file_out, "{}", state);
+                            }
+                        }
+                        _ => ()
+                    }
+                },
+                _ => ()
+            }
         }
     }
 
