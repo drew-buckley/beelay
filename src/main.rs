@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::borrow::Cow;
 use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::thread::{self, sleep};
-use std::str;
+use std::{str, time};
 use std::path::Path;
 use std::fs::{self, File};
 use log::{debug, error, info, log_enabled, warn};
@@ -195,6 +195,7 @@ async fn handle(switches: Arc<Vec<String>>, _addr: SocketAddr, req: Request<Body
     let mut status = OperationStatus::Succeeded; 
     let mut switch_name: Option<Cow<str>> = None;
     let mut new_state: Option<Cow<str>> = None;
+    let mut delay: Option<u64> = None;
     match req.uri().query() {
         Some(query_str) => {
            
@@ -219,6 +220,14 @@ async fn handle(switches: Arc<Vec<String>>, _addr: SocketAddr, req: Request<Body
                             status = OperationStatus::Failed("Unknown state.".to_string());
                         }
                     },
+                    "delay" => {
+                        if let Ok(delay_val) = value.parse::<u64>() {
+                            delay = Some(delay_val);
+                        }
+                        else {
+                            status = OperationStatus::Failed("Invalid delay value.".to_string());
+                        }
+                    }
                     _  => ()
                 };
             }
@@ -243,7 +252,7 @@ async fn handle(switches: Arc<Vec<String>>, _addr: SocketAddr, req: Request<Body
                 Method::POST => {
                     match &new_state {
                         Some(new_state) => {
-                            match set_switch_state(switch_name.as_ref().unwrap(), &new_state, mqtt_send.as_ref(), run_dir_lock) {
+                            match set_switch_state(switch_name.as_ref().unwrap(), &new_state, mqtt_send.as_ref(), run_dir_lock, delay) {
                                 Ok(()) => (),
                                 Err(reason) => status = OperationStatus::Failed(reason)
                             }
@@ -319,14 +328,22 @@ fn fetch_switch_state(switch_name: &str, mqtt_send: &Mutex<SyncSender<String>>, 
     Ok(state)
 }
 
-fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSender<String>>, run_dir_lock: Arc<Mutex<String>>) -> Result<(), String> {
+fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSender<String>>, run_dir_lock: Arc<Mutex<String>>, delay: Option<u64>) -> Result<(), String> {
     info!("Setting state for {} to {}", switch_name, new_state);
     let mut guard = match mqtt_send.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner()
     };
 
-    guard.send(format!("set,{},{}", switch_name, new_state))
+    let delay_val: u64;
+    if let Some(delay) = delay {
+        delay_val = delay;
+    }
+    else {
+        delay_val = 0;
+    }
+
+    guard.send(format!("set,{},{},{}", switch_name, new_state, delay_val))
         .expect("Channel is down!");
 
     
@@ -351,6 +368,7 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
         let mut command: Option<String> = None;
         let mut switch_name: Option<String> = None;
         let mut new_state: Option<String> = None;
+        let mut delay: Option<u64> = None;
         for token in http_msg.split(",") {
             if command.is_none() {
                 command = Some(token.to_string());
@@ -358,8 +376,11 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
             else if switch_name.is_none() {
                 switch_name = Some(token.to_string());
             }
-            else {
+            else if new_state.is_none() {
                 new_state = Some(token.to_string());
+            }
+            else {
+                delay = Some(token.parse::<u64>().unwrap());
             }
         }
         let command = command.unwrap();
@@ -368,6 +389,10 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
         match command.as_str() {
             _ => {
                 thread::spawn(move || {
+                    if let Some(delay) = delay {
+                        info!("Delaying MQTT transaction by {} seconds", delay);
+                        thread::sleep(time::Duration::from_secs(delay));
+                    }
                     if let Err(err) = perform_mqtt_transaction(switch_name.unwrap().as_str(), &new_state, Arc::clone(&http_send), Arc::clone(&run_dir_lock)) {
                         error!("{}", err);
                     }
