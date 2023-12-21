@@ -44,7 +44,11 @@ struct Args {
 
     /// Use syslog.
    #[clap(long, action)]
-   syslog: bool
+   syslog: bool,
+
+    /// Simulate for test
+   #[clap(long, action)]
+   simulate: bool
 }
 
 #[derive(Deserialize, Clone)]
@@ -130,20 +134,23 @@ async fn main() {
 
     let run_dir_lock: Arc<Mutex<String>> = Arc::new(Mutex::new(RUN_DIR.to_string()));
     let run_dir_lock_clone: Arc<Mutex<String>> = Arc::clone(&run_dir_lock);
+    let simulate = args.simulate;
     tokio::spawn(async move {
-        if let Err(e) = perform_mqtt_client_service(http_receive, http_send, run_dir_lock_clone).await {
+        if let Err(e) = perform_mqtt_client_service(http_receive, http_send, run_dir_lock_clone, simulate).await {
             error!("Service error: {}", e);
         }
     });
 
     let switches_clone = switches.clone();
     let run_dir_lock_clone: Arc<Mutex<String>> = Arc::clone(&run_dir_lock);
-    thread::spawn(move || {
-        
-        if let Err(err) = listen_for_state(switches_clone, run_dir_lock_clone) {
-            error!("{}", err);
-        }
-    });
+    if !args.simulate {
+        thread::spawn(move || {
+            
+            if let Err(err) = listen_for_state(switches_clone, run_dir_lock_clone) {
+                error!("{}", err);
+            }
+        });
+    }
 
     let run_dir_lock_clone: Arc<Mutex<String>> = Arc::clone(&run_dir_lock);
     if let Err(e) = perform_http_service(&addr, switches, mqtt_send, mqtt_receive, run_dir_lock_clone).await
@@ -165,7 +172,10 @@ fn init_logging(use_syslog: bool) {
     log_builder.init();
 }
 
-async fn perform_http_service(addr: &SocketAddr, switches: Vec<String>, mqtt_send: Arc<Mutex<SyncSender<String>>>, mqtt_receive: Arc<Mutex<Receiver<String>>>, run_dir_lock: Arc<Mutex<String>>) -> Result<(), String> {
+async fn perform_http_service(addr: &SocketAddr, switches: Vec<String>, 
+                              mqtt_send: Arc<Mutex<SyncSender<String>>>, 
+                              mqtt_receive: Arc<Mutex<Receiver<String>>>, 
+                              run_dir_lock: Arc<Mutex<String>>) -> Result<(), String> {
     info!("Starting beelay HTTP service; listening on {}", addr.to_string());
     let switches = Arc::new(switches);
     let make_service = make_service_fn(move |conn: &AddrStream| {
@@ -191,7 +201,12 @@ async fn perform_http_service(addr: &SocketAddr, switches: Vec<String>, mqtt_sen
     Ok(())
 }
 
-async fn handle(switches: Arc<Vec<String>>, _addr: SocketAddr, req: Request<Body>, mqtt_send: Arc<Mutex<SyncSender<String>>>, mqtt_receive: Arc<Mutex<Receiver<String>>>, run_dir_lock: Arc<Mutex<String>>) -> Result<Response<Body>, Infallible> {
+async fn handle(switches: Arc<Vec<String>>, 
+                _addr: SocketAddr, 
+                req: Request<Body>, 
+                mqtt_send: Arc<Mutex<SyncSender<String>>>, 
+                mqtt_receive: Arc<Mutex<Receiver<String>>>, 
+                run_dir_lock: Arc<Mutex<String>>) -> Result<Response<Body>, Infallible> {
     let mut status = OperationStatus::Succeeded; 
     let mut switch_name: Option<Cow<str>> = None;
     let mut new_state: Option<Cow<str>> = None;
@@ -275,7 +290,8 @@ async fn handle(switches: Arc<Vec<String>>, _addr: SocketAddr, req: Request<Body
     Ok(Response::new(Body::from(json_respose)))
 }
 
-fn generate_json_response(op_status: &OperationStatus, switch_state: Option<String>) -> Result<String, String> {
+fn generate_json_response(op_status: &OperationStatus, 
+                          switch_state: Option<String>) -> Result<String, String> {
     let mut json_staging_map: BTreeMap<String, String> = BTreeMap::new();
     
     match op_status {
@@ -302,7 +318,9 @@ fn generate_json_response(op_status: &OperationStatus, switch_state: Option<Stri
     Ok(json_respose)
 }
 
-fn fetch_switch_state(switch_name: &str, mqtt_send: &Mutex<SyncSender<String>>, mqtt_receive: &Mutex<Receiver<String>>) -> Result<String, String> {
+fn fetch_switch_state(switch_name: &str, 
+                      mqtt_send: &Mutex<SyncSender<String>>, 
+                      mqtt_receive: &Mutex<Receiver<String>>) -> Result<String, String> {
     info!("Fetching state for {}", switch_name);
 
     {
@@ -328,7 +346,11 @@ fn fetch_switch_state(switch_name: &str, mqtt_send: &Mutex<SyncSender<String>>, 
     Ok(state)
 }
 
-fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSender<String>>, run_dir_lock: Arc<Mutex<String>>, delay: Option<u64>) -> Result<(), String> {
+fn set_switch_state(switch_name: &str,
+                    new_state: &str, 
+                    mqtt_send: &Mutex<SyncSender<String>>, 
+                    run_dir_lock: Arc<Mutex<String>>, 
+                    delay: Option<u64>) -> Result<(), String> {
     info!("Setting state for {} to {}", switch_name, new_state);
     let mut guard = match mqtt_send.lock() {
         Ok(guard) => guard,
@@ -350,7 +372,10 @@ fn set_switch_state(switch_name: &str, new_state: &str, mqtt_send: &Mutex<SyncSe
     Ok(())
 }
 
-async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: Arc<Mutex<SyncSender<String>>>, run_dir_lock: Arc<Mutex<String>>) -> Result<(), String> {
+async fn perform_mqtt_client_service(http_receive: Receiver<String>, 
+                                     http_send: Arc<Mutex<SyncSender<String>>>, 
+                                     run_dir_lock: Arc<Mutex<String>>,
+                                     simulate: bool) -> Result<(), String> {
     let mut should_run = Mutex::new(true);
     loop {
         let should_run_next_loop: bool;
@@ -393,7 +418,12 @@ async fn perform_mqtt_client_service(http_receive: Receiver<String>, http_send: 
                         info!("Delaying MQTT transaction by {} seconds", delay);
                         thread::sleep(time::Duration::from_secs(delay));
                     }
-                    if let Err(err) = perform_mqtt_transaction(switch_name.unwrap().as_str(), &new_state, Arc::clone(&http_send), Arc::clone(&run_dir_lock)) {
+                    if let Err(err) = perform_mqtt_transaction(
+                            switch_name.unwrap().as_str(), 
+                            &new_state, 
+                            Arc::clone(&http_send), 
+                            Arc::clone(&run_dir_lock), 
+                            simulate) {
                         error!("{}", err);
                     }
                 });
@@ -408,12 +438,11 @@ const MQTT_HOST: &str = "localhost";
 const MQTT_PORT: u16 = 1883;
 const ZIGBEE2MQTT_TOPIC: &str = "zigbee2mqtt";
 
-fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_send: Arc<Mutex<SyncSender<String>>>, run_dir_lock: Arc<Mutex<String>>)  -> Result<(), String> {
-    info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
-    let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
-    let (mut client, mut connection) = Client::new(mqttoptions, 10);
-    client.subscribe(format!("zigbee2mqtt/{}", switch_name), QoS::AtMostOnce).unwrap();
-
+fn perform_mqtt_transaction(switch_name: &str, 
+                            new_state: &Option<String>, 
+                            http_send: Arc<Mutex<SyncSender<String>>>, 
+                            run_dir_lock: Arc<Mutex<String>>,
+                            simulate: bool) -> Result<(), String> {
     {
         let mut guard = match run_dir_lock.lock() {
             Ok(guard) => guard,
@@ -426,68 +455,44 @@ fn perform_mqtt_transaction(switch_name: &str, new_state: &Option<String>, http_
         let state_file = state_file_buffer.as_path();
         match new_state {
             Some(new_state) => {
-                let topic = format!("zigbee2mqtt/{}/set", switch_name);
-                info!("Sending {} ---> {}", topic, new_state);
-                if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, new_state.as_str()) {
-                    error!("{}", e);
-                }
+                
                 let mut state_file_out = File::create(state_file).unwrap();
                 write!(state_file_out, "{}", new_state);
-            }
+            },
             None => {
-                // let topic = format!("zigbee2mqtt/{}/get", switch_name);
-                // info!("Sending {}", topic);
-                // if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, "{}") {
-                //     error!("{}", e);
-                // }
-                // The above doesn't work for some reason; commenting out for now and replacing
-                // with a hack.
                 let retrieved_state = fs::read_to_string(state_file);
-                
-                if new_state.is_none() {
-                    if let Ok(guard) = http_send.as_ref().lock() {
-                        if let Ok(state) = retrieved_state {
-                            guard.send(state);
-                        }
-                        else {
-                            guard.send("OFF".to_string());
-                        }
+                if let Ok(guard) = http_send.as_ref().lock() {
+                    if let Ok(state) = retrieved_state {
+                        guard.send(state);
+                    }
+                    else {
+                        guard.send("OFF".to_string());
                     }
                 }
                 return Ok(())
             }
         }
     }
+    
+    if simulate {
+        info!("simulate is true; skipping MQTT transaction");
+        return Ok(())
+    }
 
-    for (i, notification) in connection.iter().enumerate() {
-        let notification_str = format!("Notification = {:?}", notification);
-        let event = notification.unwrap();
-        let mut state: Option<String> = None;
-        match event {
-            Incoming(incoming) => {
-                match incoming {
-                    Publish(publish) => {
-                        let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
-                        let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
-                        if let Some(state_value) = payload.get("state") {
-                            state = Some(state_value.as_str().unwrap().to_string());
-                        }
-                    }
-                    _ => ()
-                }
-            },
-            _ => ()
-        }
+    info!("Connecting to local mqtt service at {}:{}", MQTT_HOST, MQTT_PORT);
+    let mut mqttoptions = MqttOptions::new("beelay-service", MQTT_HOST, MQTT_PORT);
+    let (mut client, mut connection) = Client::new(mqttoptions, 10);
+    client.subscribe(format!("zigbee2mqtt/{}", switch_name), QoS::AtMostOnce).unwrap();
 
-        if let Some(state) = state {
-            if new_state.is_none() {
-                if let Ok(guard) = http_send.as_ref().lock() {
-                    guard.send(state);
-                }
+    match new_state {
+        Some(new_state) => {
+            let topic = format!("zigbee2mqtt/{}/set", switch_name);
+            info!("Sending {} ---> {}", topic, new_state);
+            if let Err(e) = client.publish(topic, QoS::AtLeastOnce, false, new_state.as_str()) {
+                error!("{}", e);
             }
-
-            break;
         }
+        None => {}
     }
 
     Ok(())
