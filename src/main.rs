@@ -495,6 +495,40 @@ fn perform_mqtt_transaction(switch_name: &str,
         None => {}
     }
 
+    let new_state = new_state.clone();
+    thread::spawn(move || {
+        for (i, notification) in connection.iter().enumerate() {
+            let notification_str = format!("Notification = {:?}", notification);
+            let event = notification.unwrap();
+            let mut state: Option<String> = None;
+            match event {
+                Incoming(incoming) => {
+                    match incoming {
+                        Publish(publish) => {
+                            let payload: serde_json::Value = serde_json::from_str(str::from_utf8(&publish.payload).unwrap()).unwrap();
+                            let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
+                            if let Some(state_value) = payload.get("state") {
+                                state = Some(state_value.as_str().unwrap().to_string());
+                            }
+                        }
+                        _ => ()
+                    }
+                },
+                _ => ()
+            }
+
+            if let Some(state) = state {
+                if new_state.is_none() {
+                    if let Ok(guard) = http_send.as_ref().lock() {
+                        guard.send(state);
+                    }
+                }
+
+                break;
+            }
+        }
+    });
+
     Ok(())
 }
 
