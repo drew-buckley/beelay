@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <link rel="stylesheet" href="/css/main.css">
+    </head>
+    <body>
+    <div>
+        {{{status}}}
+    </div>
+	<center>
+		{{{buttons}}}
+	</center>
+    </body>
+</html>

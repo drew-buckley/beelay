@@ -201,6 +201,9 @@ async fn perform_http_service(addr: &SocketAddr, switches: Vec<String>,
     Ok(())
 }
 
+const MAIN_CSS: &str = include_str!("../assets/css/main.css");
+
+
 async fn handle(switches: Arc<Vec<String>>, 
                 _addr: SocketAddr, 
                 req: Request<Body>, 
@@ -211,6 +214,12 @@ async fn handle(switches: Arc<Vec<String>>,
     let mut switch_name: Option<Cow<str>> = None;
     let mut new_state: Option<Cow<str>> = None;
     let mut delay: Option<u64> = None;
+
+    match req.uri().path() {
+        "/css/main.css" => return Ok(Response::new(Body::from(MAIN_CSS))),
+        _ => {}
+    }
+
     match req.uri().query() {
         Some(query_str) => {
            
@@ -316,6 +325,11 @@ fn generate_json_response(op_status: &OperationStatus,
     };
 
     Ok(json_respose)
+}
+
+fn generate_webpage_response(op_status: &OperationStatus, 
+                             switch_state: Option<String>) -> Result<String, String> {
+    
 }
 
 fn fetch_switch_state(switch_name: &str, 
