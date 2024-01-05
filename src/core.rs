@@ -1,5 +1,7 @@
+use rumqttc::{MqttOptions, AsyncClient, QoS, EventLoop};
 use tokio::fs::{self, File};
 use std::path::Path;
+use std::time::Duration;
 use std::{error::Error, fmt};
 use std::collections::HashMap;
 use tokio;
@@ -39,18 +41,29 @@ impl fmt::Display for SwitchState {
 }
 
 enum Command {
-    Get,
-    Set{ state: SwitchState, delay: u16 }
+    Get{ switch_name: String },
+    Set{ switch_name: String, state: SwitchState, delay: u16 },
+    Stop
+}
+
+pub enum RunMode {
+    Simulate,
+    MqttLink{ host: String, port: u16, base_topic: String }
 }
 
 struct CommandLink {
-    switch_name: String,
     command: Command,
-    result_sender: async_channel::Sender<Result<SwitchState, Box<dyn Error>>>,
+    result_sender: Option<async_channel::Sender<Result<SwitchState, Box<dyn Error>>>>,
+}
+
+struct MqttExecutor {
+    mqtt_client: AsyncClient,
+    event_loop: EventLoop,
+    base_topic: String
 }
 
 pub struct BeelayCore {
-    simulate: bool,
+    run_mode: RunMode,
     switch_names: Vec<String>,
     cmd_sender: async_channel::Sender<CommandLink>,
     cmd_receiver: async_channel::Receiver<CommandLink>,
@@ -58,8 +71,31 @@ pub struct BeelayCore {
     state_cache_locks: HashMap<String, tokio::sync::Mutex<String>>
 }
 
+fn switch_state_to_str(state: SwitchState) -> Result<String, Box<dyn Error>> {
+    let state_str = match state {
+        SwitchState::On => "on",
+        SwitchState::Off => "off",
+        SwitchState::Unknown => return Err(
+            Box::new(
+                BeelyCoreError::new("Can't stringify switch state of Unknown")))
+    };
+
+    Ok(state_str.to_string())
+}
+
+fn str_to_switch_state(state_str: &str) -> Result<SwitchState, Box<dyn Error>> {
+    let switch_state = match state_str {
+        "on" => SwitchState::On,
+        "off" => SwitchState::Off,
+        _ => SwitchState::Unknown
+    };
+
+    Ok(switch_state)
+}
+
+
 impl BeelayCore {
-    pub fn new(switch_names: &Vec<String>, switch_cache_dir: &str, simulate: bool) -> BeelayCore {
+    pub fn new(switch_names: &Vec<String>, switch_cache_dir: &str, run_mode: RunMode) -> BeelayCore {
         let cmd_sender : async_channel::Sender<CommandLink>;
         let cmd_receiver : async_channel::Receiver<CommandLink>;
         (cmd_sender, cmd_receiver) = async_channel::unbounded();
@@ -74,7 +110,7 @@ impl BeelayCore {
         }
 
         BeelayCore {
-            simulate: simulate,
+            run_mode: run_mode,
             switch_names: switch_names.clone(),
             cmd_sender: cmd_sender,
             cmd_receiver: cmd_receiver,
@@ -85,7 +121,10 @@ impl BeelayCore {
 
     pub async fn set_switch_state(&self, switch_name: &str, state: SwitchState, delay: u16) -> Result<SwitchState, Box<dyn Error>> {
         let state_name = state.to_string();
-        let (cmd_link, res_receiver) = BeelayCore::create_command_link(switch_name, Command::Set{state, delay})?;
+        let cmd = Command::Set{switch_name: switch_name.to_string(), state, delay};
+        let (cmd_link, res_receiver) = BeelayCore::create_command_link(cmd, true)?;
+
+        let res_receiver = res_receiver.unwrap();
 
         debug!("Sending SET {} {}", switch_name, state_name);
         self.cmd_sender.send(cmd_link).await?;
@@ -99,10 +138,13 @@ impl BeelayCore {
     }
 
     pub async fn get_switch_state(&self, switch_name: &str) -> Result<SwitchState, Box<dyn Error>> {
-        let (cmd_link, res_receiver) = BeelayCore::create_command_link(switch_name, Command::Get)?;
+        let cmd = Command::Get{switch_name: switch_name.to_string()};
+        let (cmd_link, res_receiver) = BeelayCore::create_command_link(cmd, true)?;
 
         debug!("Sending GET {}", switch_name);
         self.cmd_sender.send(cmd_link).await?;
+
+        let res_receiver = res_receiver.unwrap();
 
         debug!("Waiting for response for GET {}", switch_name);
         let result = res_receiver.recv().await?;
@@ -112,50 +154,129 @@ impl BeelayCore {
         result
     }
 
-    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
-        while self.should_run {
-            let cmd_link = self.cmd_receiver.recv().await?;
-            let cmd = cmd_link.command;
-            let res_sender = cmd_link.result_sender;
-            let switch_name = cmd_link.switch_name;
+    pub async fn stop(&self) -> Result<(), Box<dyn Error>> {
+        let cmd = Command::Stop;
+        let (cmd_link, _) = BeelayCore::create_command_link(cmd, false)?;
 
-            match cmd {
-                Command::Get => {
-                    let result = self.inner_get(&switch_name).await;
-                    if let Err(err) = res_sender.send(result).await {
-                        error!("Result sender failed: {}", err);
-                    }
-                },
-                Command::Set{state, delay} => {
-                    let result = self.inner_set(&switch_name, state, delay).await;
-                    if let Err(err) = res_sender.send(result).await {
-                        error!("Result sender failed: {}", err);
-                    }
-                }
-            }
-        }
+        debug!("Sending STOP");
+        self.cmd_sender.send(cmd_link).await?;
+
         Ok(())
     }
 
-    async fn inner_get(&self, switch_name: &str) -> Result<SwitchState, Box<dyn Error>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+        loop {
+            let mut mqtt_executor: Option<MqttExecutor>;
+            match &self.run_mode {
+                RunMode::MqttLink{host, port, base_topic} => {
+                    let mut mqttoptions = MqttOptions::new("rumqtt-async", host, port.clone());
+                    mqttoptions.set_keep_alive(Duration::from_secs(1));
+
+                    let (mqtt_client, event_loop) = AsyncClient::new(mqttoptions, 10);
+                    for switch in &self.switch_names{
+                        mqtt_client.subscribe(format!("{}/{}", base_topic, switch), QoS::AtMostOnce).await?;
+                    }
+                    
+                    mqtt_executor = Some(MqttExecutor{ mqtt_client, event_loop, base_topic: base_topic.clone() });
+                },
+                RunMode::Simulate => {
+                    mqtt_executor = None;
+                }
+            }
+
+            let should_keep_running = self.inner_run(&mut mqtt_executor).await?;
+            if !should_keep_running {
+                break; // graceful exit
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn inner_run(&self, mqtt_executor: &mut Option<MqttExecutor>) -> Result<bool, Box<dyn Error>> {
+        while self.should_run {
+            if !self.cmd_receiver.is_empty() {
+                let cmd_link = self.cmd_receiver.recv().await?;
+                let cmd = cmd_link.command;
+                let res_sender: Option<async_channel::Sender<Result<SwitchState, Box<dyn Error>>>> = cmd_link.result_sender;
+
+                match cmd {
+                    Command::Get{switch_name} => {
+                        let result = self.inner_get(&switch_name, mqtt_executor).await;
+                        if let Err(err) = res_sender.unwrap().send(result).await {
+                            error!("Result sender failed: {}", err);
+                            // May need to resend?
+                            return Ok(true) // keep running
+                        }
+                    },
+                    Command::Set{switch_name, state, delay} => {
+                        let result = self.inner_set(&switch_name, state, delay, mqtt_executor).await;
+                        if let Err(err) = res_sender.unwrap().send(result).await {
+                            error!("Result sender failed: {}", err);
+                            // May need to resend?
+                            return Ok(true) // keep running
+                        }
+                    },
+                    Command::Stop => {
+                        return Ok(false) // stop running
+                    }
+                }
+            }
+            else {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+
+            // if let Some(mqtt_executor) = mqtt_executor {
+            //     let notification = mqtt_executor.event_loop.poll().await?;
+            //     debug!("Received = {:?}", notification);
+            // }
+        }
+
+        Ok(true) // keep running
+    }
+
+    async fn inner_get(&self, switch_name: &str, mut _mqtt_executor: &Option<MqttExecutor>) -> Result<SwitchState, Box<dyn Error>> {
         let state = self.read_cache_file(switch_name).await?;
         Ok(state)
     }
 
-    async fn inner_set(&self, switch_name: &str, state: SwitchState, delay: u16) -> Result<SwitchState, Box<dyn Error>> {
+    async fn inner_set(&self, switch_name: &str, state: SwitchState, delay: u16, mqtt_executor: &Option<MqttExecutor>) -> Result<SwitchState, Box<dyn Error>> {
+        if delay > 0 {
+            tokio::time::sleep(Duration::from_secs(delay.into())).await;
+        }
+
         if let Err(err) = self.write_cache_file(switch_name, state).await {
             error!("Failed to cache state for {}: {}", switch_name, err);
+        }
+
+        if let Some(mqtt_executor) = mqtt_executor {
+            let mqtt_client = &mqtt_executor.mqtt_client;
+            let base_topic = &mqtt_executor.base_topic;
+            let switch_state_str = switch_state_to_str(state)?;
+            mqtt_client.publish(format!("{}/{}/set", base_topic, switch_name), QoS::AtLeastOnce, false, switch_state_str).await?;
         }
 
         Ok(state)
     }
 
-    fn create_command_link(switch_name: &str, command: Command) -> Result<(CommandLink, async_channel::Receiver<Result<SwitchState, Box<dyn Error>>>), Box<dyn Error>> {
-        let res_sender : async_channel::Sender<Result<SwitchState, Box<dyn Error>>>;
-        let res_receiver : async_channel::Receiver<Result<SwitchState, Box<dyn Error>>>;
-        (res_sender, res_receiver) = async_channel::unbounded();
+    fn create_command_link(command: Command, should_create_comms: bool) -> Result<(CommandLink, Option<async_channel::Receiver<Result<SwitchState, Box<dyn Error>>>>), Box<dyn Error>> {
+        let res_sender : Option<async_channel::Sender<Result<SwitchState, Box<dyn Error>>>>;
+        let res_receiver : Option<async_channel::Receiver<Result<SwitchState, Box<dyn Error>>>>;
 
-        Ok((CommandLink{switch_name: switch_name.to_string(), command: command, result_sender: res_sender}, res_receiver))
+        if should_create_comms {
+            let res_s : async_channel::Sender<Result<SwitchState, Box<dyn Error>>>;
+            let res_r : async_channel::Receiver<Result<SwitchState, Box<dyn Error>>>;
+            (res_s, res_r) = async_channel::unbounded();
+
+            res_sender = Some(res_s);
+            res_receiver = Some(res_r);
+        }
+        else {
+            res_sender = None;
+            res_receiver = None;
+        }
+
+        Ok((CommandLink{ command: command, result_sender: res_sender}, res_receiver))
     }
 
     async fn read_cache_file(&self, switch_name: &str) -> Result<SwitchState, Box<dyn Error>> {
@@ -222,11 +343,16 @@ mod tests {
     async fn perform_test_routine(beelay: &BeelayCore) -> Result<(), Box<dyn Error>> {
 
         for state in vec![SwitchState::On, SwitchState::Off, SwitchState::On, SwitchState::Off] {
-            beelay.set_switch_state("switch1", SwitchState::On, 0).await?;
-            let retrieved_state = beelay.get_switch_state("switch1").await?;
+            beelay.set_switch_state("switch1", state, 0).await
+                .expect("Set switch failed");
+            let retrieved_state = beelay.get_switch_state("switch1").await
+                .expect("Get switch failed");
             info!("State: {}", state.to_string());
             assert!(state == retrieved_state);
         }
+
+        beelay.stop().await?;
+
         Ok(())
     }
 
@@ -236,7 +362,7 @@ mod tests {
             env_logger::Env::default().default_filter_or("debug"));
         log_builder.init();
 
-        let beelay = BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", true);
+        let beelay = BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", RunMode::Simulate);
         tokio::join!(beelay.run(), perform_test_routine(&beelay));
     }
 }
