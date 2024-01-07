@@ -3,6 +3,7 @@ use http::{StatusCode};
 use hyper::{Response, Body};
 use serde_json;
 use serde::{Deserialize};
+use log::{debug, error, info, log_enabled, warn};
 
 use crate::core::{BeelayCore, str_to_switch_state, switch_state_to_str, SwitchState, BeelayCoreError, BeelayCoreErrorType};
 
@@ -30,6 +31,7 @@ impl fmt::Display for BeelyApiError {
 }
 
 fn generate_response(json: &str, status_code: StatusCode) -> Response<Body> {
+    debug!("Generating response; JSON: {}; status code: {}", json, status_code);
     Response::builder()
         .status(status_code)
         .body(Body::from(json.to_string()))
@@ -64,7 +66,7 @@ struct BeelayApi {
 }
 
 impl BeelayApi {
-    pub fn new(&self, core: BeelayCore) -> BeelayApi {
+    pub fn new(core: BeelayCore) -> BeelayApi {
         BeelayApi{ core }
     }
 
@@ -72,9 +74,13 @@ impl BeelayApi {
         self.core.run().await
     }
 
+    pub async fn stop_core(&self) -> Result<(), Box<dyn Error>> {
+        self.core.stop().await
+    }
+
     pub async fn handle_post(&self, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
         let mut api_path = VecDeque::from_iter(api_path);
-        let top_api_elem = api_path.pop_back();
+        let top_api_elem = api_path.pop_front();
         if top_api_elem.is_none() {
             return Ok(generate_api_error_respose("Only top level API URL provided", StatusCode::NOT_FOUND))
         }
@@ -96,7 +102,7 @@ impl BeelayApi {
 
     pub async fn handle_get(&self, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
         let mut api_path = VecDeque::from_iter(api_path);
-        let top_api_elem = api_path.pop_back();
+        let top_api_elem = api_path.pop_front();
         if top_api_elem.is_none() {
             return Ok(generate_api_error_respose("Only top level API URL provided", StatusCode::NOT_FOUND))
         }
@@ -216,7 +222,7 @@ impl BeelayApi {
         let new_state = new_state.unwrap();
 
         if delay.is_none() {
-            return Ok(generate_api_error_respose("Endpoint requires 'delay' query parameter", StatusCode::BAD_REQUEST))
+            delay = Some(0);
         }
         let delay = delay.unwrap();
 
@@ -236,5 +242,48 @@ impl BeelayApi {
         }
 
         Ok(generate_success_response(None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use hyper::body;
+
+    use crate::core::RunMode;
+
+    use super::*;
+
+    async fn perform_test_routine(api: &BeelayApi) -> Result<(), Box<dyn Error>> {
+
+        for state in vec!["on", "off", "on", "off"] {
+            let path_vec = vec!["switch".to_string(), "switch1".to_string()];
+            api.handle_post(&path_vec, &vec![("state".to_string(), state.to_string())]).await
+                .expect("Set switch failed");
+            let resp = api.handle_get(&path_vec, &Vec::new()).await
+                .expect("Get switch failed");
+
+            let body = body::to_bytes(resp).await?;
+            let body = std::str::from_utf8(&body)?;
+            let content: HashMap<String, String> = serde_json::from_str(body)?;
+            let retrieved_state = content.get("state")
+                .expect("Failed to retrieve state");
+            info!("State: {}", state.to_string());
+            assert!(state == retrieved_state);
+        }
+
+        api.stop_core().await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sim_end2end() {
+        let mut log_builder = env_logger::Builder::from_env(
+            env_logger::Env::default().default_filter_or("debug"));
+        log_builder.init();
+
+        let beelay = BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", RunMode::Simulate);
+        let api = BeelayApi::new(beelay);
+        tokio::join!(api.run_core(), perform_test_routine(&api));
     }
 }

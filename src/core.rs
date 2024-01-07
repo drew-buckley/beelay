@@ -59,6 +59,25 @@ enum Command {
     Reset
 }
 
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Command::Get{ switch_name } => {
+                write!(f, "Command::Get{{ switch_name: {} }}", switch_name)
+            },
+            Command::Set{ switch_name, state, delay } => {
+                write!(f, "Command::Set{{ switch_name: {}, state: {}, delay: {} }}", switch_name, state, delay)
+            },
+            Command::Stop => {
+                write!(f, "Command::Stop")
+            },
+            Command::Reset => {
+                write!(f, "Command::Reset")
+            }
+        }
+    }
+}
+
 pub enum RunMode {
     Simulate,
     MqttLink{ host: String, port: u16, base_topic: String }
@@ -249,10 +268,19 @@ impl BeelayCore {
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+        let mut first_run = true;
         loop {
             let mut mqtt_executor: Option<MqttExecutor>;
             match &self.run_mode {
                 RunMode::MqttLink{host, port, base_topic} => {
+                    let mut init_verb = "Reinitializing";
+                    if first_run {
+                        init_verb = "Initializing";
+                    }
+                    first_run = false;
+
+                    info!("{} MQTT client ({}:{}, base topic: {})", init_verb, host, port, base_topic);
+
                     let mut mqttoptions = MqttOptions::new("rumqtt-async", host, port.clone());
                     mqttoptions.set_keep_alive(Duration::from_secs(1));
 
@@ -292,6 +320,7 @@ impl BeelayCore {
                 }
             }
 
+            info!("");
             let should_keep_running = self.inner_run(&mut mqtt_executor).await?;
             if !should_keep_running {
                 break; // graceful exit
@@ -303,38 +332,35 @@ impl BeelayCore {
 
     async fn inner_run(&self, mqtt_executor: &mut Option<MqttExecutor>) -> Result<bool, Box<dyn Error>> {
         while self.should_run {
-            if !self.cmd_receiver.is_empty() {
-                let cmd_link = self.cmd_receiver.recv().await?;
-                let cmd = cmd_link.command;
-                let res_sender: Option<async_channel::Sender<Result<SwitchState, Box<dyn Error>>>> = cmd_link.result_sender;
+            debug!("Waiting for next internal core command");
+            let cmd_link = self.cmd_receiver.recv().await?;
+            let cmd = cmd_link.command;
+            let res_sender: Option<async_channel::Sender<Result<SwitchState, Box<dyn Error>>>> = cmd_link.result_sender;
+            debug!("Got internal core command: {}", cmd);
 
-                match cmd {
-                    Command::Get{switch_name} => {
-                        let result = self.inner_get(&switch_name, mqtt_executor).await;
-                        if let Err(err) = res_sender.unwrap().send(result).await {
-                            error!("Result sender failed: {}", err);
-                            // May need to resend?
-                            return Ok(true) // keep running
-                        }
-                    },
-                    Command::Set{switch_name, state, delay} => {
-                        let result = self.inner_set(&switch_name, state, delay, mqtt_executor).await;
-                        if let Err(err) = res_sender.unwrap().send(result).await {
-                            error!("Result sender failed: {}", err);
-                            // May need to resend?
-                            return Ok(true) // keep running
-                        }
-                    },
-                    Command::Reset => {
+            match cmd {
+                Command::Get{switch_name} => {
+                    let result = self.inner_get(&switch_name, mqtt_executor).await;
+                    if let Err(err) = res_sender.unwrap().send(result).await {
+                        error!("Result sender failed: {}", err);
+                        // May need to resend?
                         return Ok(true) // keep running
-                    },
-                    Command::Stop => {
-                        return Ok(false) // stop running
                     }
+                },
+                Command::Set{switch_name, state, delay} => {
+                    let result = self.inner_set(&switch_name, state, delay, mqtt_executor).await;
+                    if let Err(err) = res_sender.unwrap().send(result).await {
+                        error!("Result sender failed: {}", err);
+                        // May need to resend?
+                        return Ok(true) // keep running
+                    }
+                },
+                Command::Reset => {
+                    return Ok(true) // keep running
+                },
+                Command::Stop => {
+                    return Ok(false) // stop running
                 }
-            }
-            else {
-                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         }
 
