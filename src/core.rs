@@ -9,7 +9,7 @@ use tokio;
 use async_channel;
 use log::{debug, error, info, log_enabled, warn};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum BeelayCoreErrorType {
     InvalidSwitch,
     InternalError

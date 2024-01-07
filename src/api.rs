@@ -32,7 +32,7 @@ impl fmt::Display for BeelyApiError {
 fn generate_response(json: &str, status_code: StatusCode) -> Response<Body> {
     Response::builder()
         .status(status_code)
-        .body(Body::from(json))
+        .body(Body::from(json.to_string()))
         .expect("Failed to generate response")
 }
 
