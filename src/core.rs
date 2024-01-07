@@ -1,6 +1,7 @@
-use rumqttc::{MqttOptions, AsyncClient, QoS, EventLoop};
+use rumqttc::{MqttOptions, AsyncClient, QoS, EventLoop, Event};
 use tokio::fs::{self, File};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{error::Error, fmt};
 use std::collections::HashMap;
@@ -43,7 +44,8 @@ impl fmt::Display for SwitchState {
 enum Command {
     Get{ switch_name: String },
     Set{ switch_name: String, state: SwitchState, delay: u16 },
-    Stop
+    Stop,
+    Reset
 }
 
 pub enum RunMode {
@@ -58,17 +60,16 @@ struct CommandLink {
 
 struct MqttExecutor {
     mqtt_client: AsyncClient,
-    event_loop: EventLoop,
     base_topic: String
 }
 
 pub struct BeelayCore {
     run_mode: RunMode,
     switch_names: Vec<String>,
-    cmd_sender: async_channel::Sender<CommandLink>,
+    cmd_sender: Arc<tokio::sync::Mutex<async_channel::Sender<CommandLink>>>,
     cmd_receiver: async_channel::Receiver<CommandLink>,
     should_run: bool,
-    state_cache_locks: HashMap<String, tokio::sync::Mutex<String>>
+    state_cache_locks: Arc<HashMap<String, tokio::sync::Mutex<String>>>
 }
 
 fn switch_state_to_str(state: SwitchState) -> Result<String, Box<dyn Error>> {
@@ -93,6 +94,63 @@ fn str_to_switch_state(state_str: &str) -> Result<SwitchState, Box<dyn Error>> {
     Ok(switch_state)
 }
 
+async fn write_cache_file(state: SwitchState, switch_cache: &str) -> Result<(), Box<dyn Error>> {
+    let switch_cache_path = Path::new(switch_cache);
+
+    debug!("Writing {}", switch_cache);
+
+    let state_str = switch_state_to_str(state)?;
+    fs::write(switch_cache_path, &state_str).await?;
+
+    debug!("Successfully wrote {} to {}", state_str, switch_cache);
+
+    Ok(())
+}
+
+async fn read_cache_file(switch_cache: &str) -> Result<SwitchState, Box<dyn Error>> {
+    let switch_cache_path = Path::new((switch_cache).clone());
+
+    debug!("Reading {}", switch_cache);
+
+    let mut switch_state = SwitchState::Unknown;
+    
+    if fs::metadata(switch_cache_path).await.is_ok() {
+        let cache_contents = fs::read_to_string(switch_cache_path).await?;
+        let cache_contents = cache_contents.to_ascii_lowercase();
+        switch_state = str_to_switch_state(&cache_contents)?;
+
+        debug!("Successfully read {} from {}", cache_contents, switch_cache);
+    }
+
+    Ok(switch_state)
+}
+
+async fn process_notification(event: Event, base_topic: &str, state_cache_locks: Arc<HashMap<String, tokio::sync::Mutex<String>>>) -> Result<(), Box<dyn Error>> {
+    match event {
+        Event::Incoming(incoming) => {
+            match incoming {
+                rumqttc::Packet::Publish(publish) => {
+                    let switch_name = &publish.topic[base_topic.len()+1..publish.topic.len()];
+                    info!("Got packet for {}", switch_name);
+                    let payload: serde_json::Value = serde_json::from_str(std::str::from_utf8(&publish.payload).unwrap()).unwrap();
+                    let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
+                    if let Some(state_value) = payload.get("state") {
+                        let state = state_value.as_str().unwrap().to_string();
+                        debug!("Extracted state value: {}", state);
+                        let state = str_to_switch_state(&state)?;
+                        if let Some(state_cache_lock) = &state_cache_locks.get(switch_name) {
+                            let state_cache = state_cache_lock.lock().await;
+                            write_cache_file(state, &state_cache).await?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
 
 impl BeelayCore {
     pub fn new(switch_names: &Vec<String>, switch_cache_dir: &str, run_mode: RunMode) -> BeelayCore {
@@ -112,10 +170,10 @@ impl BeelayCore {
         BeelayCore {
             run_mode: run_mode,
             switch_names: switch_names.clone(),
-            cmd_sender: cmd_sender,
+            cmd_sender: Arc::new(tokio::sync::Mutex::new(cmd_sender)),
             cmd_receiver: cmd_receiver,
             should_run: true,
-            state_cache_locks: state_cache_locks
+            state_cache_locks: Arc::new(state_cache_locks)
         }
     }
 
@@ -125,10 +183,11 @@ impl BeelayCore {
         let (cmd_link, res_receiver) = BeelayCore::create_command_link(cmd, true)?;
 
         let res_receiver = res_receiver.unwrap();
-
-        debug!("Sending SET {} {}", switch_name, state_name);
-        self.cmd_sender.send(cmd_link).await?;
-
+        {
+            debug!("Sending SET {} {}", switch_name, state_name);
+            let cmd_sender = self.cmd_sender.lock().await;
+            cmd_sender.send(cmd_link).await?;
+        }
         debug!("Waiting for response for SET {} {}", switch_name, state_name);
         let result = res_receiver.recv().await?;
 
@@ -141,8 +200,11 @@ impl BeelayCore {
         let cmd = Command::Get{switch_name: switch_name.to_string()};
         let (cmd_link, res_receiver) = BeelayCore::create_command_link(cmd, true)?;
 
-        debug!("Sending GET {}", switch_name);
-        self.cmd_sender.send(cmd_link).await?;
+        {
+            debug!("Sending GET {}", switch_name);
+            let cmd_sender = self.cmd_sender.lock().await;
+            cmd_sender.send(cmd_link).await?;
+        }
 
         let res_receiver = res_receiver.unwrap();
 
@@ -158,8 +220,11 @@ impl BeelayCore {
         let cmd = Command::Stop;
         let (cmd_link, _) = BeelayCore::create_command_link(cmd, false)?;
 
-        debug!("Sending STOP");
-        self.cmd_sender.send(cmd_link).await?;
+        {
+            debug!("Sending STOP");
+            let cmd_sender = self.cmd_sender.lock().await;
+            cmd_sender.send(cmd_link).await?;
+        }
 
         Ok(())
     }
@@ -172,12 +237,36 @@ impl BeelayCore {
                     let mut mqttoptions = MqttOptions::new("rumqtt-async", host, port.clone());
                     mqttoptions.set_keep_alive(Duration::from_secs(1));
 
-                    let (mqtt_client, event_loop) = AsyncClient::new(mqttoptions, 10);
+                    let (mqtt_client, mut event_loop) = AsyncClient::new(mqttoptions, 10);
                     for switch in &self.switch_names{
                         mqtt_client.subscribe(format!("{}/{}", base_topic, switch), QoS::AtMostOnce).await?;
                     }
                     
-                    mqtt_executor = Some(MqttExecutor{ mqtt_client, event_loop, base_topic: base_topic.clone() });
+                    mqtt_executor = Some(MqttExecutor{ mqtt_client, base_topic: base_topic.clone() });
+
+                    let cmd_sender = Arc::clone(&self.cmd_sender);
+                    let state_cache_locks = Arc::clone(&self.state_cache_locks);
+                    let base_topic = base_topic.clone();
+
+                    tokio::task::spawn_local(async move {
+                        loop {
+                            let notification = match event_loop.poll().await {
+                                Ok(nf) => nf,
+                                Err(err) => {
+                                    error!("Event loop failed: {}", err);
+                                    let cmd_sender = cmd_sender.lock().await;
+                                    if let Err(err) = cmd_sender.send(CommandLink { command: Command::Reset, result_sender: None }).await {
+                                        error!("Failed to send RESET after event loop failed: {}", err);
+                                    }
+                                    break;
+                                }
+                            };
+                            debug!("Received = {:?}", notification);
+                            if let Err(err) = process_notification(notification, &base_topic, Arc::clone(&state_cache_locks)).await {
+                                error!("Failed to process event notification: {}", err);
+                            }
+                        }
+                    });
                 },
                 RunMode::Simulate => {
                     mqtt_executor = None;
@@ -217,6 +306,9 @@ impl BeelayCore {
                             return Ok(true) // keep running
                         }
                     },
+                    Command::Reset => {
+                        return Ok(true) // keep running
+                    },
                     Command::Stop => {
                         return Ok(false) // stop running
                     }
@@ -225,11 +317,6 @@ impl BeelayCore {
             else {
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-
-            // if let Some(mqtt_executor) = mqtt_executor {
-            //     let notification = mqtt_executor.event_loop.poll().await?;
-            //     debug!("Received = {:?}", notification);
-            // }
         }
 
         Ok(true) // keep running
@@ -282,43 +369,14 @@ impl BeelayCore {
     async fn read_cache_file(&self, switch_name: &str) -> Result<SwitchState, Box<dyn Error>> {
         let switch_cache_lock = self.get_cache_file(switch_name)?;
         let switch_cache = switch_cache_lock.lock().await;
-        let switch_cache_path = Path::new((&switch_cache.as_str()).clone());
-
-        debug!("Reading {}", switch_cache);
-
-        let mut switch_state = SwitchState::Unknown;
-        
-        if fs::metadata(switch_cache_path).await.is_ok() {
-            let cache_contents = fs::read_to_string(Path::new(&switch_cache.as_str())).await?;
-            let cache_contents = cache_contents.to_ascii_lowercase();
-            match cache_contents.as_str() {
-                "on" => switch_state = SwitchState::On,
-                "off" => switch_state = SwitchState::Off,
-                _ => return Err(
-                    Box::new(
-                        BeelyCoreError::new(format!("Invalid cache value for {}: {}", switch_name, cache_contents).as_str())))
-            }
-        }
-
+        let switch_state = read_cache_file(&switch_cache).await?;
         Ok(switch_state)
     }
 
     async fn write_cache_file(&self, switch_name: &str, state: SwitchState) -> Result<(), Box<dyn Error>> {
         let switch_cache_lock = self.get_cache_file(switch_name)?;
         let switch_cache = switch_cache_lock.lock().await;
-        let switch_cache_path = Path::new((&switch_cache.as_str()).clone());
-
-        debug!("Writing {}", switch_cache);
-
-        let state_str = match state {
-            SwitchState::On => "on",
-            SwitchState::Off => "off",
-            SwitchState::Unknown => return Err(
-                Box::new(
-                    BeelyCoreError::new("Can't cache switch state of Unknown")))
-        };
-
-        fs::write(switch_cache_path, state_str).await?;
+        write_cache_file(state, &switch_cache).await?;
 
         Ok(())
     }
@@ -333,7 +391,6 @@ impl BeelayCore {
 
         Ok(switch_cache_lock.unwrap())
     }
-
 }
 
 #[cfg(test)]
