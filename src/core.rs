@@ -9,22 +9,33 @@ use tokio;
 use async_channel;
 use log::{debug, error, info, log_enabled, warn};
 
-#[derive(Debug)]
-struct BeelyCoreError {
-    message: String
+#[derive(Debug, PartialEq)]
+pub enum BeelayCoreErrorType {
+    InvalidSwitch,
+    InternalError
 }
 
-impl Error for BeelyCoreError {}
+#[derive(Debug)]
+pub struct BeelayCoreError {
+    message: String,
+    error_type: BeelayCoreErrorType
+}
 
-impl BeelyCoreError {
-    fn new(message: &str) -> BeelyCoreError {
-        BeelyCoreError{ message: message.to_string() }
+impl Error for BeelayCoreError {}
+
+impl BeelayCoreError {
+    fn new(message: &str, error_type: BeelayCoreErrorType) -> BeelayCoreError {
+        BeelayCoreError{ message: message.to_string(), error_type }
+    }
+
+    pub fn get_type(&self) -> BeelayCoreErrorType {
+        self.error_type
     }
 }
 
-impl fmt::Display for BeelyCoreError {
+impl fmt::Display for BeelayCoreError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Oh no, something bad went down")
+        write!(f, "BeelayCoreError: {}", self.message)
     }
 }
 
@@ -72,19 +83,19 @@ pub struct BeelayCore {
     state_cache_locks: Arc<HashMap<String, tokio::sync::Mutex<String>>>
 }
 
-fn switch_state_to_str(state: SwitchState) -> Result<String, Box<dyn Error>> {
+pub fn switch_state_to_str(state: SwitchState) -> Result<String, Box<dyn Error>> {
     let state_str = match state {
         SwitchState::On => "on",
         SwitchState::Off => "off",
         SwitchState::Unknown => return Err(
             Box::new(
-                BeelyCoreError::new("Can't stringify switch state of Unknown")))
+                BeelayCoreError::new("Can't stringify switch state of Unknown", BeelayCoreErrorType::InternalError)))
     };
 
     Ok(state_str.to_string())
 }
 
-fn str_to_switch_state(state_str: &str) -> Result<SwitchState, Box<dyn Error>> {
+pub fn str_to_switch_state(state_str: &str) -> Result<SwitchState, Box<dyn Error>> {
     let switch_state = match state_str {
         "on" => SwitchState::On,
         "off" => SwitchState::Off,
@@ -178,6 +189,8 @@ impl BeelayCore {
     }
 
     pub async fn set_switch_state(&self, switch_name: &str, state: SwitchState, delay: u16) -> Result<SwitchState, Box<dyn Error>> {
+        self.validate_switch_name(switch_name)?;
+
         let state_name = state.to_string();
         let cmd = Command::Set{switch_name: switch_name.to_string(), state, delay};
         let (cmd_link, res_receiver) = BeelayCore::create_command_link(cmd, true)?;
@@ -197,6 +210,8 @@ impl BeelayCore {
     }
 
     pub async fn get_switch_state(&self, switch_name: &str) -> Result<SwitchState, Box<dyn Error>> {
+        self.validate_switch_name(switch_name)?;
+
         let cmd = Command::Get{switch_name: switch_name.to_string()};
         let (cmd_link, res_receiver) = BeelayCore::create_command_link(cmd, true)?;
 
@@ -214,6 +229,10 @@ impl BeelayCore {
         debug!("Got response for GET {}: {}", switch_name, result.is_ok());
 
         result
+    }
+
+    pub fn get_switches(&self) -> &Vec<String> {
+        &self.switch_names
     }
 
     pub async fn stop(&self) -> Result<(), Box<dyn Error>> {
@@ -386,10 +405,24 @@ impl BeelayCore {
         if switch_cache_lock.is_none() {
             return Err(
                 Box::new(
-                    BeelyCoreError::new(format!("Could not resolve cache file for switch name, {}", switch_name).as_str())))
+                    BeelayCoreError::new(
+                        format!("Could not resolve cache file for switch name, {}", switch_name).as_str(), 
+                        BeelayCoreErrorType::InternalError)))
         }
 
         Ok(switch_cache_lock.unwrap())
+    }
+
+    fn validate_switch_name(&self, switch_name: &str) -> Result<(), Box<dyn Error>> {
+        if !self.switch_names.contains(&switch_name.to_string()) {
+            return Err(
+                Box::new(
+                    BeelayCoreError::new(
+                        format!("'{}' is not a known switch", switch_name).as_str(), 
+                        BeelayCoreErrorType::InvalidSwitch)))
+        }
+
+        Ok(())
     }
 }
 
