@@ -1,5 +1,5 @@
-use std::{error::Error, fmt, collections::{VecDeque, HashMap}};
-use http::{StatusCode};
+use std::{error::Error, fmt, collections::{VecDeque, HashMap}, sync::Arc};
+use http::{StatusCode, Method};
 use hyper::{Response, Body};
 use serde_json;
 use serde::{Deserialize};
@@ -61,12 +61,12 @@ fn generate_switch_list_response(switches: &Vec<String>) -> Response<Body> {
     generate_response(&json, StatusCode::OK)
 }
 
-struct BeelayApi {
-    core: BeelayCore
+pub struct BeelayApi {
+    core: Arc<BeelayCore>
 }
 
 impl BeelayApi {
-    pub fn new(core: BeelayCore) -> BeelayApi {
+    pub fn new(core: Arc<BeelayCore>) -> BeelayApi {
         BeelayApi{ core }
     }
 
@@ -78,7 +78,22 @@ impl BeelayApi {
         self.core.stop().await
     }
 
-    pub async fn handle_post(&self, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
+    pub async fn handle_hit(&self, method: &Method, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
+        match *method {
+            Method::POST => {
+                self.handle_post(&api_path, &query_params).await
+            },
+            Method::GET => {
+                self.handle_get(&api_path, &query_params).await
+            },
+            _ => {
+                let message = format!("Method not supported: {}", method);
+                return Ok(generate_api_error_respose(&message, StatusCode::BAD_REQUEST))
+            }
+        }
+    }
+
+    async fn handle_post(&self, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
         let mut api_path = VecDeque::from_iter(api_path);
         let top_api_elem = api_path.pop_front();
         if top_api_elem.is_none() {
@@ -100,7 +115,7 @@ impl BeelayApi {
         Ok(resp)
     }
 
-    pub async fn handle_get(&self, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
+    async fn handle_get(&self, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
         let mut api_path = VecDeque::from_iter(api_path);
         let top_api_elem = api_path.pop_front();
         if top_api_elem.is_none() {
@@ -253,7 +268,7 @@ mod tests {
 
     use super::*;
 
-    async fn perform_test_routine(api: &BeelayApi) -> Result<(), Box<dyn Error>> {
+    async fn perform_test_routine(api: &BeelayApi, beelay: Arc<BeelayCore>) -> Result<(), Box<dyn Error>> {
 
         for state in vec!["on", "off", "on", "off"] {
             let path_vec = vec!["switch".to_string(), "switch1".to_string()];
@@ -271,7 +286,7 @@ mod tests {
             assert!(state == retrieved_state);
         }
 
-        api.stop_core().await?;
+        beelay.stop().await?;
 
         Ok(())
     }
@@ -282,8 +297,9 @@ mod tests {
             env_logger::Env::default().default_filter_or("debug"));
         log_builder.init();
 
-        let beelay = BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", RunMode::Simulate);
+        let beelay = Arc::new(BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", RunMode::Simulate));
+        let beelay_ref = Arc::clone(&beelay);
         let api = BeelayApi::new(beelay);
-        tokio::join!(api.run_core(), perform_test_routine(&api));
+        tokio::join!(beelay_ref.run(), perform_test_routine(&api, Arc::clone(&beelay_ref)));
     }
 }
