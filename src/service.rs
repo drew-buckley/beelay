@@ -7,6 +7,7 @@ use log::{debug, error, info, log_enabled, warn};
 use hyper::{Body, Request, Response, Server, Uri};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
+use tokio::sync::Mutex;
 
 use crate::{core::BeelayCore, api::BeelayApi};
 
@@ -57,7 +58,32 @@ fn generate_response(body: &str, status_code: StatusCode) -> Response<Body> {
         .expect("Failed to generate response")
 }
 
-async fn handle(api: Arc<BeelayApi>, req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn perform_http_service(addr: &SocketAddr, api: Arc<Mutex<BeelayApi>>) -> Result<(), Box<dyn Error>> {
+    let api = Arc::clone(&api);
+    let make_service = make_service_fn(move |conn: &AddrStream| {
+        let api = Arc::clone(&api);
+        let addr = conn.remote_addr();
+        let service = service_fn(move |req| {
+            let api = Arc::clone(&api);
+            // fake_handle(req)
+            handle(api, req)
+        });
+
+        async move { Ok::<_, Infallible>(service) }
+    });
+
+    let server = Server::bind(&addr).serve(make_service);
+
+    server.await?;
+
+    Ok(())
+}
+
+async fn fake_handle(req: Request<Body>) -> Result<Response<Body>, Infallible> {
+    Ok(generate_response(GENERIC_404_PAGE, StatusCode::NOT_FOUND))
+}
+
+async fn handle(api: Arc<Mutex<BeelayApi>>, req: Request<Body>) -> Result<Response<Body>, Infallible> {
     let method = req.method();
     let uri = req.uri();
     let mut path = VecDeque::from_iter(parse_path_to_elems(uri.path()));
@@ -71,6 +97,7 @@ async fn handle(api: Arc<BeelayApi>, req: Request<Body>) -> Result<Response<Body
     match top_path_elem.as_str() {
         API_ELEM => {
             let api_path = Vec::from_iter(path);
+            let api = api.lock().await;
             let result = api.handle_hit(method, &api_path, &query_params).await;
             match result {
                 Ok(resp) => {
@@ -90,7 +117,8 @@ async fn handle(api: Arc<BeelayApi>, req: Request<Body>) -> Result<Response<Body
 
 pub struct BeelayService {
     core: Arc<BeelayCore>,
-    api: Arc<BeelayApi>
+    api: Arc<BeelayApi>,
+    addr: SocketAddr
 }
 
 impl BeelayService {
@@ -104,7 +132,8 @@ impl BeelayService {
 
         BeelayService{ 
             core: Arc::clone(&core),
-            api: Arc::clone(&api)
+            api: Arc::clone(&api),
+            addr
         }
     }
 
@@ -116,26 +145,11 @@ impl BeelayService {
             }
         });
         
-        self.perform_http_service().await
+        perform_http_service(&self.addr, Arc::clone(&self.api)).await
     }
 
     pub async fn stop(&self) -> Result<(), Box<dyn Error>> {
         self.core.stop().await
     }
 
-    async fn perform_http_service(&self) -> Result<(), Box<dyn Error>> {
-        let api = Arc::clone(&self.api);
-        let make_service = make_service_fn(move |conn: &AddrStream| {
-            let api = Arc::clone(&api);
-            let addr = conn.remote_addr();
-            let service = service_fn(move |req| {
-                let api = Arc::clone(&api);
-                handle(api, req)
-            });
-    
-            async move { Ok::<_, Infallible>(service) }
-        });
-
-        Ok(())
-    }
 }
