@@ -2,12 +2,11 @@ use std::path::Path;
 use std::io::Write;
 
 use clap::Parser;
-use hyper::client::service;
 use serde::Deserialize;
 use tokio::fs;
 use log::{debug, error, info, log_enabled, warn};
 
-use beelay::core::{RunMode};
+use beelay::{core::{RunMode, BeelayCore}, service::BeelayService};
 
 
 #[derive(Deserialize, Clone)]
@@ -47,6 +46,14 @@ struct Args {
    simulate: bool
 }
 
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct ConfigModeArgs {
+    // Path to output configuration TOML file.
+    #[clap(short, long)]
+    output: Option<String>
+}
+
 const DEFAULT_CONFIG: &str = "
 [service]
 bind_address = \"127.0.0.1\"
@@ -62,6 +69,24 @@ topic = \"zigbee2mqtt\"
 
 #[tokio::main]
 async fn main() {
+    let exe = std::env::current_exe()
+        .expect("Failed to get current exe from env")
+        .file_name()
+        .expect("Failed to derive exe base name")
+        .to_owned();
+
+    if exe == "beelay" {
+        run_beelay().await;
+    }
+    else if exe == "beelay-config" {
+        run_beelay_config().await;
+    }
+    else {
+        panic!("Invalid exe name: {}", exe.to_string_lossy());
+    }
+}
+
+async fn run_beelay() {
     let args = Args::parse();
     init_logging(args.syslog);
 
@@ -73,7 +98,7 @@ async fn main() {
     let service_config = config.service.unwrap();
     let bind_address = service_config.bind_address.unwrap();
     let bind_port = service_config.port.unwrap();
-    let switches = service_config.switches.unwrap();
+    let switches_str = service_config.switches.unwrap();
     let cache_dir = service_config.cache_dir.unwrap();
 
     let broker_config = config.mqttbroker.unwrap();
@@ -89,9 +114,28 @@ async fn main() {
         run_mode = RunMode::MqttLink { host: broker_host, port: broker_port, base_topic: base_topic };
     }
 
-    
+    let mut switches: Vec<String> = Vec::new();
+    for switch in switches_str.split(',') {
+        switches.push(switch.to_string())
+    }
+    let switches = switches;
 
-    
+    let core = BeelayCore::new(&switches, &cache_dir, run_mode);
+    let service = BeelayService::new(core, &bind_address, &bind_port);
+    if let Err(err) = service.run().await {
+        panic!("Beelay service main loop crashed: {}", err);
+    }
+}
+
+async fn run_beelay_config() {
+    let args = ConfigModeArgs::parse();
+    if let Some(out_file) = args.output {
+        fs::write(out_file, DEFAULT_CONFIG).await
+            .expect("Failed to write output configuration file");
+    }
+    else {
+        print!("{}", DEFAULT_CONFIG);
+    }
 }
 
 fn init_logging(use_syslog: bool) {
