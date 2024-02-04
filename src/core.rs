@@ -1,5 +1,6 @@
 use rumqttc::{MqttOptions, AsyncClient, QoS, EventLoop, Event};
 use tokio::fs::{self, File};
+use core::ffi::FromBytesUntilNulError;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +39,9 @@ impl fmt::Display for BeelayCoreError {
         write!(f, "BeelayCoreError: {}", self.message)
     }
 }
+
+unsafe impl Send for BeelayCoreError {}
+unsafe impl Sync for BeelayCoreError {}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum SwitchState {
@@ -181,6 +185,9 @@ async fn process_notification(event: Event, base_topic: &str, state_cache_locks:
     }
     Ok(())
 }
+
+unsafe impl Send for BeelayCore {}
+unsafe impl Sync for BeelayCore {}
 
 impl BeelayCore {
     pub fn new(switch_names: &Vec<String>, switch_cache_dir: &str, run_mode: RunMode) -> BeelayCore {

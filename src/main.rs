@@ -2,9 +2,12 @@ use std::path::Path;
 use std::io::Write;
 
 use clap::Parser;
+use serde::ser;
 use serde::Deserialize;
 use tokio::fs;
+use tokio::join;
 use log::{debug, error, info, log_enabled, warn};
+use libsystemd::daemon;
 
 use beelay::{core::{RunMode, BeelayCore}, service::BeelayService};
 
@@ -59,7 +62,9 @@ const DEFAULT_CONFIG: &str = "
 bind_address = \"127.0.0.1\"
 port = 9999
 #switches = \"example_switch1,example_switch2\"
-cache_dir = \"/run/beelay\"
+switches = \"example_switch1,example_switch2\"
+#cache_dir = \"/run/beelay\"
+cache_dir = \"test/run/\"
 
 [mqttbroker]
 host = \"localhost\"
@@ -122,8 +127,15 @@ async fn run_beelay() {
 
     let core = BeelayCore::new(&switches, &cache_dir, run_mode);
     let service = BeelayService::new(core, &bind_address, &bind_port);
-    if let Err(err) = service.run().await {
-        panic!("Beelay service main loop crashed: {}", err);
+    // if let Err(err) = service.run_service().await {
+    //     panic!("Beelay service main loop crashed: {}", err);
+    // }
+    let (service_res, core_res) = join!(service.run_service(), service.run_core());
+    if let Err(err) = service_res {
+        error!("Service failed: {}", err);
+    }
+    if let Err(err) = core_res {
+        error!("Core failed: {}", err);
     }
 }
 

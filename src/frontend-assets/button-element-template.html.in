@@ -1,0 +1,35 @@
+        <center><input id="{{{id}}}" class="{{{id}}}_class" type="button" value="{{{label}}}" style="height:100px;width:600px" onclick="onClick_{{{id}}}_on();" /></center><br/>
+        <script>
+            function onClick_{{{id}}}_on() {
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", "{{{post_on_url}}}");
+                xhr.setRequestHeader("Content-Type", "application/json; charset=UTF-8");
+                xhr.send("");
+            }
+
+            function onClick_{{{id}}}_off() {
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", "{{{post_off_url}}}");
+                xhr.setRequestHeader("Content-Type", "application/json; charset=UTF-8");
+                xhr.send("");
+            }
+
+            function {{{id}}}_update() {
+                let xmlHttpReq = new XMLHttpRequest();
+                xmlHttpReq.open("GET", "{{{get_url}}}", false);
+                xmlHttpReq.send(null);
+                const data = JSON.parse(xmlHttpReq.responseText);
+                if (data.state == "on") {
+                    document.getElementById("{{{id}}}").style.color = "#000000";
+                    document.getElementById("{{{id}}}").style.backgroundColor = "#FFFF00";
+                    document.getElementById("{{{id}}}").setAttribute('onclick', 'onClick_{{{id}}}_off()');
+                }
+                else if (data.state == "off") {
+                    document.getElementById("{{{id}}}").style.color = "#ffffff";
+                    document.getElementById("{{{id}}}").style.backgroundColor = "#000099"
+                    document.getElementById("{{{id}}}").setAttribute('onclick', 'onClick_{{{id}}}_on()');
+                }
+            }
+
+            setInterval({{{id}}}_update, 1000);
+        </script>

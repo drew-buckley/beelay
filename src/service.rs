@@ -9,29 +9,15 @@ use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use tokio::sync::Mutex;
 
-use crate::{core::BeelayCore, api::BeelayApi};
-
-const GENERIC_404_PAGE: &str = "
-<!DOCTYPE html>
-<html>
-    <head>
-        <title>Beelay 404 Not Found</title>
-    </head>
-    <body>
-        <h1>Beelay 404 Not Found</h1>
-        <p>Requested resource not found. Please consult Beelay documentation.</p>
-    </body>
-</html>
-";
-
-const API_ELEM: &str = "api";
-const CLIENT_ELEM: &str = "client";
-
+use crate::frontend;
+use crate::{core::BeelayCore, api::BeelayApi, frontend::BeelayFrontend, common::{GENERIC_404_PAGE, API_ELEM, CLIENT_ELEM}};
 
 fn parse_path_to_elems(path: &str) -> Vec<String> {
     let mut elems = Vec::new();
     for elem in path.split("/") {
-        elems.push(elem.to_string());
+        if !elem.is_empty() {
+            elems.push(elem.to_string());
+        }
     }
 
     elems
@@ -102,6 +88,7 @@ async fn handle(req_sender: Arc<tokio::sync::Mutex<async_channel::Sender<Request
 }
 
 async fn inner_handle(api: Arc<BeelayApi>,
+                      frontend: Arc<BeelayFrontend>,
                       req_receiver: Arc<tokio::sync::Mutex<async_channel::Receiver<Request<Body>>>>, 
                       resp_sender: Arc<tokio::sync::Mutex<async_channel::Sender<Response<Body>>>>) -> Result<(), Box<dyn Error>> {
     let req;
@@ -111,7 +98,7 @@ async fn inner_handle(api: Arc<BeelayApi>,
             .expect("Failed to receive request on internal channel");
     }
 
-    let resp = process_req(req, &api).await.unwrap();
+    let resp = process_req(req, &api, &frontend).await.unwrap();
     {
         let resp_sender = resp_sender.lock().await;
         resp_sender.send(resp).await.expect("Failed to send response on internal channel");
@@ -120,7 +107,7 @@ async fn inner_handle(api: Arc<BeelayApi>,
     Ok(())
 }
 
-async fn process_req(req: Request<Body>, api: &Arc<BeelayApi>) -> Result<Response<Body>, Infallible> {
+async fn process_req(req: Request<Body>, api: &Arc<BeelayApi>, frontend: &Arc<BeelayFrontend>) -> Result<Response<Body>, Infallible> {
     let method = req.method();
     let uri = req.uri();
     let mut path = VecDeque::from_iter(parse_path_to_elems(uri.path()));
@@ -145,6 +132,19 @@ async fn process_req(req: Request<Body>, api: &Arc<BeelayApi>) -> Result<Respons
                 }
             }
         },
+        CLIENT_ELEM => {
+            let client_path = Vec::from_iter(path);
+            let result = frontend.handle_hit(&client_path, &query_params).await;
+            match result {
+                Ok(resp) => {
+                    return Ok(resp)
+                },
+                Err(err) => {
+                    error!("Error processing client request: {}", err);
+                    return Ok(generate_response("{{\"status\":\"error\",\"error_message\":\"Internal error\"}}", StatusCode::INTERNAL_SERVER_ERROR))
+                }
+            };
+        },
         _ => {
             return Ok(generate_response(GENERIC_404_PAGE, StatusCode::NOT_FOUND))
         }
@@ -154,6 +154,7 @@ async fn process_req(req: Request<Body>, api: &Arc<BeelayApi>) -> Result<Respons
 pub struct BeelayService {
     core: Arc<BeelayCore>,
     api: Arc<BeelayApi>,
+    frontend: Arc<BeelayFrontend>,
     addr: SocketAddr,
     req_sender: Arc<tokio::sync::Mutex<async_channel::Sender<Request<Body>>>>,
     req_receiver: Arc<tokio::sync::Mutex<async_channel::Receiver<Request<Body>>>>,
@@ -166,6 +167,7 @@ impl BeelayService {
     pub fn new(core: BeelayCore, address: &str, port: &u16) -> BeelayService {
         let core = Arc::new(core);
         let api = Arc::new(BeelayApi::new(Arc::clone(&core)));
+        let frontend = Arc::new(BeelayFrontend::new(&core.get_switches()));
 
         let req_sender : async_channel::Sender<Request<Body>>;
         let req_receiver : async_channel::Receiver<Request<Body>>;
@@ -182,6 +184,7 @@ impl BeelayService {
         BeelayService{ 
             core: Arc::clone(&core),
             api: Arc::clone(&api),
+            frontend:  Arc::clone(&frontend),
             addr,
             req_sender: Arc::new(Mutex::new(req_sender)),
             req_receiver: Arc::new(Mutex::new(req_receiver)),
@@ -191,13 +194,13 @@ impl BeelayService {
         }
     }
 
-    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
-        let core = Arc::clone(&self.core);
-        tokio::task::spawn_local(async move {
-            if let Err(err) = core.run().await {
-                error!("Beelay core stopped running due to error: {}", err);
-            }
-        });
+    pub async fn run_service(&self) -> Result<(), Box<dyn Error>> {
+        // let core = Arc::clone(&self.core);
+        // tokio::task::spawn(async move {
+        //     if let Err(err) = core.run().await {
+        //         error!("Beelay core stopped running due to error: {}", err);
+        //     }
+        // });
 
         let req_sender = Arc::clone(&self.req_sender);
         let resp_receiver = Arc::clone(&self.resp_receiver);
@@ -214,10 +217,15 @@ impl BeelayService {
             let req_receiver = Arc::clone(&self.req_receiver);
             let resp_sender = Arc::clone(&self.resp_sender);
             let api = Arc::clone(&self.api);
-            inner_handle(api, req_receiver, resp_sender).await?;
+            let frontend = Arc::clone(&self.frontend);
+            inner_handle(api, frontend, req_receiver, resp_sender).await?;
         }
 
         Ok(())
+    }
+
+    pub async fn run_core(&self) -> Result<(), Box<dyn Error>> {
+        self.core.run().await
     }
 
     pub async fn stop(&mut self) -> Result<(), Box<dyn Error>> {
