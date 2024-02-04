@@ -1,6 +1,5 @@
 use std::{error::Error, fmt, collections::{VecDeque, HashMap}, sync::Arc};
-use http::Method;
-use hyper::{Response, Body, StatusCode};
+use hyper::{Response, Body, StatusCode, Method};
 use serde_json;
 use serde::{Deserialize};
 use log::{debug, error, info, log_enabled, warn};
