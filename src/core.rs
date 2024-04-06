@@ -186,9 +186,6 @@ async fn process_notification(event: Event, base_topic: &str, state_cache_locks:
     Ok(())
 }
 
-unsafe impl Send for BeelayCore {}
-unsafe impl Sync for BeelayCore {}
-
 impl BeelayCore {
     pub fn new(switch_names: &Vec<String>, switch_cache_dir: &str, run_mode: RunMode) -> BeelayCore {
         let cmd_sender : async_channel::Sender<CommandLink>;
@@ -286,23 +283,28 @@ impl BeelayCore {
                     }
                     first_run = false;
 
-                    info!("{} MQTT client ({}:{}, base topic: {})", init_verb, host, port, base_topic);
-
-                    let mut mqttoptions = MqttOptions::new("rumqtt-async", host, port.clone());
-                    mqttoptions.set_keep_alive(Duration::from_secs(1));
-
-                    let (mqtt_client, mut event_loop) = AsyncClient::new(mqttoptions, 10);
-                    for switch in &self.switch_names{
-                        mqtt_client.subscribe(format!("{}/{}", base_topic, switch), QoS::AtMostOnce).await?;
-                    }
-                    
-                    mqtt_executor = Some(MqttExecutor{ mqtt_client, base_topic: base_topic.clone() });
-
-                    let cmd_sender = Arc::clone(&self.cmd_sender);
+                    let init_verb = init_verb.to_string();
+                    let host = host.to_string();
+                    let port = port.clone();
+                    let base_topic = base_topic.to_string();
+                    let switch_names = self.switch_names.clone();
                     let state_cache_locks = Arc::clone(&self.state_cache_locks);
-                    let base_topic = base_topic.clone();
+                    tokio::spawn(async move {
+                        info!("{} MQTT client ({}:{}, base topic: {})", init_verb, host, port, base_topic);
 
-                    tokio::task::spawn_local(async move {
+                        let mut mqttoptions = MqttOptions::new("rumqtt-async", host, port.clone());
+                        mqttoptions.set_keep_alive(Duration::from_secs(1));
+
+                        let (mqtt_client, mut event_loop) = AsyncClient::new(mqttoptions, 10);
+                        for switch in &switch_names{
+                            mqtt_client.subscribe(format!("{}/{}", base_topic, switch), QoS::AtMostOnce).await;
+                        }
+                        
+                        mqtt_executor = Some(MqttExecutor{ mqtt_client, base_topic: base_topic.clone() });
+
+                        let cmd_sender = Arc::clone(&self.cmd_sender);
+                        let state_cache_locks = Arc::clone(&self.state_cache_locks);
+                        let base_topic = base_topic.clone();
                         loop {
                             let notification = match event_loop.poll().await {
                                 Ok(nf) => nf,
