@@ -1,19 +1,6 @@
-use std::clone;
 use std::path::Path;
 use std::io::Write;
-use std::process::exit;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
-use std::time::Duration;
-use std::sync::atomic::Ordering::Relaxed;
 
-use beelay::core::build_core;
-use beelay::core::BeelayCoreCtrl;
-use beelay::mqtt_client::build_mqtt_simulation_client;
-use beelay::mqtt_client::MqttClientCtrl;
-use beelay::service::build_service;
-use beelay::service::BeelayService;
-use beelay::service::BeelayServiceCtrl;
 use clap::Parser;
 use serde::ser;
 use serde::Deserialize;
@@ -21,7 +8,6 @@ use tokio::fs;
 use tokio::join;
 use log::{debug, error, info, log_enabled, warn};
 use libsystemd::daemon;
-use signal_hook::{consts::SIGTERM, iterator::Signals};
 
 use beelay::{core::{BeelayCore}};
 
@@ -125,151 +111,32 @@ async fn run_beelay() {
     let broker_port = broker_config.port.unwrap();
     let base_topic = broker_config.topic.unwrap();
 
+    let run_mode;
+    if args.simulate {
+        run_mode = RunMode::Simulate;
+    }
+    else {
+        run_mode = RunMode::MqttLink { host: broker_host, port: broker_port, base_topic: base_topic };
+    }
+
     let mut switches: Vec<String> = Vec::new();
     for switch in switches_str.split(',') {
         switches.push(switch.to_string())
     }
     let switches = switches;
 
-    let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(args.simulate);
-    let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
-    let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
-
-    let should_run = Arc::new(AtomicBool::new(true));
-    launch_signal_monitor(&service_ctrl, &service_task_running, &core_ctrl, &core_task_running, &mqtt_ctrl, &mqtt_task_running, &should_run);
-    
-    while should_run.load(Relaxed) {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    let core = BeelayCore::new(&switches, &cache_dir, run_mode);
+    let service = BeelayService::new(core, &bind_address, &bind_port);
+    // if let Err(err) = service.run_service().await {
+    //     panic!("Beelay service main loop crashed: {}", err);
+    // }
+    let (service_res, core_res) = join!(service.run_service(), service.run_core());
+    if let Err(err) = service_res {
+        error!("Service failed: {}", err);
     }
-
-    info!("Beelay done!")
-}
-
-fn launch_mqtt_task(simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
-    let mqtt_ctrl;
-    let mqtt_task_running = Arc::new(AtomicBool::new(true));
-    let mqtt_task_running_clone = Arc::clone(&mqtt_task_running);
-
-    if simulate {
-        let mqtt_task_running = mqtt_task_running_clone;
-        let mut mqtt_client;
-        (mqtt_client, mqtt_ctrl) = build_mqtt_simulation_client(Duration::from_millis(1000), 64);
-        tokio::spawn(async move {
-            if let Err(err) = mqtt_client.run().await {
-                error!("MQTT simulation client crashed: {}", err);
-            }
-
-            mqtt_task_running.store(false, Relaxed);
-        });
+    if let Err(err) = core_res {
+        error!("Core failed: {}", err);
     }
-    else {
-        todo!()
-    }
-
-    (mqtt_ctrl, mqtt_task_running)
-}
-
-fn launch_core_task(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctrl: MqttClientCtrl) -> (BeelayCoreCtrl, Arc<AtomicBool>) {
-    let (mut core, core_ctrl) = build_core(switch_names, switch_cache_dir, mqtt_ctrl.clone(), 64);
-    let core_task_running = Arc::new(AtomicBool::new(true));
-    let core_task_running_clone = Arc::clone(&core_task_running);
-    tokio::spawn(async move {
-        let core_task_running = core_task_running_clone;
-        if let Err(err) = core.run().await {
-            error!("Beelay core crashed: {}", err);
-        }
-
-        core_task_running.store(false, Relaxed);
-    });
-
-    (core_ctrl, core_task_running)
-}
-
-fn launch_service_task(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address: &str, port: &u16) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
-    let (service, service_ctrl) = build_service(core_ctrl.clone(), &switches, address, port, 64);
-    let service_task_running = Arc::new(AtomicBool::new(true));
-    let service_task_running_clone = Arc::clone(&service_task_running);
-    tokio::spawn(async move {
-        let service_task_running = service_task_running_clone;
-        if let Err(err) = service.run().await {
-            error!("Beelay service crashed: {}", err);
-        }
-
-        service_task_running.store(false, Relaxed);
-    });
-
-    (service_ctrl, service_task_running)
-}
-
-fn launch_signal_monitor(service_ctrl: &BeelayServiceCtrl,
-                         service_task_running: &Arc<AtomicBool>,
-                         core_ctrl: &BeelayCoreCtrl,
-                         core_task_running: &Arc<AtomicBool>,
-                         mqtt_ctrl: &MqttClientCtrl,
-                         mqtt_task_running: &Arc<AtomicBool>,
-                         should_run: &Arc<AtomicBool>) {
-    let service_ctrl = service_ctrl.clone();
-    let service_task_running = Arc::clone(service_task_running);
-    let core_ctrl = core_ctrl.clone();
-    let core_task_running = Arc::clone(core_task_running);
-    let mqtt_client_ctrl = mqtt_ctrl.clone();
-    let mqtt_task_running = Arc::clone(mqtt_task_running);
-    let should_run = Arc::clone(should_run);
-
-    tokio::spawn(async move {
-        monitor_signals(service_ctrl, 
-                        service_task_running, 
-                        core_ctrl, 
-                        core_task_running, 
-                        mqtt_client_ctrl, 
-                        mqtt_task_running, 
-                        should_run).await;
-    });
-}
-
-async fn monitor_signals(service_ctrl: BeelayServiceCtrl,
-                         service_task_running: Arc<AtomicBool>,
-                         core_ctrl: BeelayCoreCtrl,
-                         core_task_running: Arc<AtomicBool>,
-                         mqtt_ctrl: MqttClientCtrl,
-                         mqtt_task_running: Arc<AtomicBool>,
-                         should_run: Arc<AtomicBool>) {
-    let mut signals = Signals::new(&[SIGTERM]).unwrap();
-    for sig in signals.pending() {
-        match sig {
-            SIGTERM => {
-                info!("Stopping web service");
-                if let Err(err) = service_ctrl.stop().await {
-                    error!("Failed to stop service: {}", err);
-                }
-
-                info!("Stopping core");
-                if let Err(err) = core_ctrl.stop().await {
-                    error!("Failed to stop core: {}", err);
-                }
-
-                info!("Stopping MQTT client");
-                if let Err(err) = mqtt_ctrl.stop().await {
-                    error!("Failed to stop MQTT client: {}", err);
-                }
-
-                info!("Waiting for tasks to complete");
-                let mut waiting_for_task = mqtt_task_running.load(Relaxed);
-                while waiting_for_task {
-                    tokio::time::sleep(Duration::from_micros(250)).await;
-                    waiting_for_task = mqtt_task_running.load(Relaxed)
-                                     & core_task_running.load(Relaxed)
-                                     & service_task_running.load(Relaxed);
-                }
-
-                should_run.store(false, Relaxed);
-                break;
-            }
-            _ => ()
-        }
-    }
-
-    tokio::time::sleep(Duration::from_millis(250)).await;
 }
 
 async fn run_beelay_config() {

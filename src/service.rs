@@ -1,16 +1,95 @@
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::fmt;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use std::{sync::Arc, error::Error, net::SocketAddr};
+use std::sync::atomic::Ordering::Relaxed;
+
 use http::Method;
 use log::{debug, error, info, log_enabled, warn};
 
 use hyper::{Body, Request, Response, Server, StatusCode};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use tokio::time::Instant;
 
+use crate::common::{build_message_link_transactor, MessageLink, MessageLinkTransactor};
+use crate::core::BeelayCoreCtrl;
 use crate::frontend;
-use crate::{core::BeelayCore, api::BeelayApi, frontend::BeelayFrontend, common::{GENERIC_404_PAGE, API_ELEM, CLIENT_ELEM}};
+use crate::{api::BeelayApi, frontend::BeelayFrontend, common::{GENERIC_404_PAGE, API_ELEM, CLIENT_ELEM}};
+
+
+#[derive(Debug)]
+pub struct BeelayServiceError {
+    message: String
+}
+
+impl Error for BeelayServiceError {}
+
+impl BeelayServiceError {
+    fn new(message: &str) -> BeelayServiceError {
+        BeelayServiceError{ message: message.to_string() }
+    }
+}
+
+impl fmt::Display for BeelayServiceError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "BeelayServiceError: {}", self.message)
+    }
+}
+
+#[derive(Clone)]
+enum Command {
+    Ping,
+    Stop,
+    Reset
+}
+
+impl fmt::Display for Command {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Command::Ping => {
+                write!(f, "Command::Ping")
+            },
+            Command::Stop => {
+                write!(f, "Command::Stop")
+            },
+            Command::Reset => {
+                write!(f, "Command::Reset")
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+enum CommandResponse {
+    Ack,
+    Error{ error: String }
+}
+
+impl CommandResponse {
+    fn is_ack(&self) -> bool {
+        match &self {
+            CommandResponse::Ack => true,
+            _ => false
+        }
+    }
+}
+
+impl fmt::Display for CommandResponse {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            CommandResponse::Ack => {
+                write!(f, "CommandResponse::Ack")
+            },
+            CommandResponse::Error{ error } => {
+                write!(f, "CommandResponse::Error{{ error: {} }}", error)
+            }
+        }
+    }
+}
 
 fn parse_path_to_elems(path: &str) -> Vec<String> {
     let mut elems = Vec::new();
@@ -152,7 +231,7 @@ async fn process_req(req: Request<Body>, api: &Arc<BeelayApi>, frontend: &Arc<Be
 }
 
 pub struct BeelayService {
-    core: Arc<BeelayCore>,
+    command_rx: mpsc::Receiver<MessageLink<Command, CommandResponse>>,
     api: Arc<BeelayApi>,
     frontend: Arc<BeelayFrontend>,
     addr: SocketAddr,
@@ -160,52 +239,53 @@ pub struct BeelayService {
     req_receiver: Arc<tokio::sync::Mutex<async_channel::Receiver<Request<Body>>>>,
     resp_sender: Arc<tokio::sync::Mutex<async_channel::Sender<Response<Body>>>>,
     resp_receiver: Arc<tokio::sync::Mutex<async_channel::Receiver<Response<Body>>>>,
-    should_run: bool
+    should_run: Arc<AtomicBool>
+}
+
+pub fn build_service(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address: &str, port: &u16, msg_queue_cap: usize) -> (BeelayService, BeelayServiceCtrl) {
+    let (mlt, rx) = build_message_link_transactor(msg_queue_cap);
+
+    let ctrl = BeelayServiceCtrl {
+        msg_link_transactor: mlt
+    };
+
+    let api = Arc::new(BeelayApi::new(core_ctrl.clone()));
+    let frontend = Arc::new(BeelayFrontend::new(&switches));
+
+    let req_sender : async_channel::Sender<Request<Body>>;
+    let req_receiver : async_channel::Receiver<Request<Body>>;
+    (req_sender, req_receiver) = async_channel::unbounded();
+
+    let resp_sender : async_channel::Sender<Response<Body>>;
+    let resp_receiver : async_channel::Receiver<Response<Body>>;
+    (resp_sender, resp_receiver) = async_channel::unbounded();
+
+    let addr: SocketAddr = (address.to_string() + ":" + &port.to_string())
+        .parse()
+        .expect("Unable to parse socket address.");
+
+    let service = BeelayService{
+        command_rx: rx,
+        api: Arc::clone(&api),
+        frontend:  Arc::clone(&frontend),
+        addr,
+        req_sender: Arc::new(Mutex::new(req_sender)),
+        req_receiver: Arc::new(Mutex::new(req_receiver)),
+        resp_sender: Arc::new(Mutex::new(resp_sender)),
+        resp_receiver: Arc::new(Mutex::new(resp_receiver)),
+        should_run: Arc::new(AtomicBool::new(true))
+    };
+
+    (service, ctrl)
 }
 
 impl BeelayService {
-    pub fn new(core: BeelayCore, address: &str, port: &u16) -> BeelayService {
-        let core = Arc::new(core);
-        let api = Arc::new(BeelayApi::new(Arc::clone(&core)));
-        let frontend = Arc::new(BeelayFrontend::new(&core.get_switches()));
-
-        let req_sender : async_channel::Sender<Request<Body>>;
-        let req_receiver : async_channel::Receiver<Request<Body>>;
-        (req_sender, req_receiver) = async_channel::unbounded();
-
-        let resp_sender : async_channel::Sender<Response<Body>>;
-        let resp_receiver : async_channel::Receiver<Response<Body>>;
-        (resp_sender, resp_receiver) = async_channel::unbounded();
-
-        let addr: SocketAddr = (address.to_string() + ":" + &port.to_string())
-            .parse()
-            .expect("Unable to parse socket address.");
-
-        BeelayService{ 
-            core: Arc::clone(&core),
-            api: Arc::clone(&api),
-            frontend:  Arc::clone(&frontend),
-            addr,
-            req_sender: Arc::new(Mutex::new(req_sender)),
-            req_receiver: Arc::new(Mutex::new(req_receiver)),
-            resp_sender: Arc::new(Mutex::new(resp_sender)),
-            resp_receiver: Arc::new(Mutex::new(resp_receiver)),
-            should_run: true
-        }
-    }
-
-    pub async fn run_service(&self) -> Result<(), Box<dyn Error>> {
-        // let core = Arc::clone(&self.core);
-        // tokio::task::spawn(async move {
-        //     if let Err(err) = core.run().await {
-        //         error!("Beelay core stopped running due to error: {}", err);
-        //     }
-        // });
-
+    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
         let req_sender = Arc::clone(&self.req_sender);
         let resp_receiver = Arc::clone(&self.resp_receiver);
         let addr = self.addr.clone();
-        tokio::task::spawn(async move {
+
+        tokio::spawn(async move {
             if let Err(err) = perform_http_service(&addr,
                                                                    req_sender,
                                                                    resp_receiver).await {
@@ -213,7 +293,7 @@ impl BeelayService {
             }
         });
 
-        while self.should_run {
+        while self.should_run.load(Relaxed) {
             let req_receiver = Arc::clone(&self.req_receiver);
             let resp_sender = Arc::clone(&self.resp_sender);
             let api = Arc::clone(&self.api);
@@ -224,13 +304,69 @@ impl BeelayService {
         Ok(())
     }
 
-    pub async fn run_core(&self) -> Result<(), Box<dyn Error>> {
-        self.core.run().await
+}
+
+#[derive(Clone)]
+pub struct BeelayServiceCtrl {
+    msg_link_transactor: MessageLinkTransactor<Command, CommandResponse>
+}
+
+impl BeelayServiceCtrl {
+    pub async fn ping(&self) -> Result<Duration, Box<dyn Error>> {
+        let instant = Instant::now();
+        match self.msg_link_transactor.transact(Command::Ping).await {
+            Some(resp) => {
+                if resp.is_ack() {
+                    Ok(instant.elapsed())
+                }
+                else {
+                    Err(BeelayServiceCtrl::unexpected_response_err(resp))
+                }
+            }
+            None => {
+                Err(BeelayServiceCtrl::none_response_err())
+            }
+        }
     }
 
-    pub async fn stop(&mut self) -> Result<(), Box<dyn Error>> {
-        self.should_run = false;
-        self.core.stop().await
+    pub async fn reset(&self) -> Result<(), Box<dyn Error>> {
+        match self.msg_link_transactor.transact(Command::Reset).await {
+            Some(resp) => {
+                if resp.is_ack() {
+                    Ok(())
+                }
+                else {
+                    Err(BeelayServiceCtrl::unexpected_response_err(resp))
+                }
+            }
+            None => {
+                Err(BeelayServiceCtrl::none_response_err())
+            }
+        }
     }
 
+    pub async fn stop(&self) -> Result<(), Box<dyn Error>> {
+        match self.msg_link_transactor.transact(Command::Stop).await {
+            Some(resp) => {
+                if resp.is_ack() {
+                    Ok(())
+                }
+                else {
+                    Err(BeelayServiceCtrl::unexpected_response_err(resp))
+                }
+            }
+            None => {
+                Err(BeelayServiceCtrl::none_response_err())
+            }
+        }
+    }
+
+    fn none_response_err() -> Box<BeelayServiceError> {
+        Box::new(BeelayServiceError::new("None response from BeelayServiceCtrl channel"))
+    }
+
+    fn unexpected_response_err(resp: CommandResponse) -> Box<BeelayServiceError> {
+        Box::new(BeelayServiceError::new(
+            format!("Unexpected response from BeelayServiceCtrl channel: {}", resp).as_str()))
+    }
 }
