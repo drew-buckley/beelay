@@ -212,13 +212,15 @@ impl BeelayCore {
                         }
                     },
                     None => {
-                        error!("Got None from state update channel")
+                        warn!("State update channel down; core state no longer synching with MQTT");
+                        return
                     },
                 }
             }
         });
 
-        loop {
+        let mut should_run = true;
+        while should_run {
             let msg_link = self.command_rx.recv().await.unwrap();
             let resp;
             match msg_link.get_message() {
@@ -231,6 +233,7 @@ impl BeelayCore {
                     resp = CommandResponse::SwitchState { name: switch_name.to_string(), state, status };
                 }
                 Command::Set { switch_name, state, delay } => {
+                    info!("Setting {} to {} (delay {}s)", switch_name, state, delay);
                     let switch_name = switch_name.clone();
                     let switch_name_copy = switch_name.clone();
                     let state = state.clone();
@@ -254,7 +257,8 @@ impl BeelayCore {
                 },
                 Command::Stop => {
                     info!("Stopping core");
-                    break;
+                    should_run = false;
+                    resp = CommandResponse::Ack;
                 },
                 Command::Reset => todo!(),
                 Command::EnumerateSwitches => {

@@ -280,7 +280,7 @@ pub fn build_service(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address:
 }
 
 impl BeelayService {
-    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
         let req_sender = Arc::clone(&self.req_sender);
         let resp_receiver = Arc::clone(&self.resp_receiver);
         let addr = self.addr.clone();
@@ -293,12 +293,52 @@ impl BeelayService {
             }
         });
 
+        let req_receiver = Arc::clone(&self.req_receiver);
+        let resp_sender = Arc::clone(&self.resp_sender);
+        let api = Arc::clone(&self.api);
+        let frontend = Arc::clone(&self.frontend);
+        let should_run = Arc::clone(&self.should_run);
+        tokio::spawn(async move {
+            let req_receiver = req_receiver;
+            let resp_sender = resp_sender;
+            let api = api;
+            let frontend = frontend;
+            let should_run = should_run;
+            while should_run.load(Relaxed) {
+                if let Err(err) = inner_handle(Arc::clone(&api), 
+                                               Arc::clone(&frontend), 
+                                               Arc::clone(&req_receiver), 
+                                               Arc::clone(&resp_sender)).await {
+                    error!("HTTP service failure: {}", err);
+                }
+            }
+        });
+
         while self.should_run.load(Relaxed) {
-            let req_receiver = Arc::clone(&self.req_receiver);
-            let resp_sender = Arc::clone(&self.resp_sender);
-            let api = Arc::clone(&self.api);
-            let frontend = Arc::clone(&self.frontend);
-            inner_handle(api, frontend, req_receiver, resp_sender).await?;
+            match self.command_rx.recv().await {
+                Some(msg_link) => {
+                    let resp;
+                    match msg_link.get_message() {
+                        Command::Ping => {
+                            resp = CommandResponse::Ack;
+                        },
+                        Command::Stop => {
+                            info!("Stopping HTTP service");
+                            self.should_run.store(false, Relaxed);
+                            resp = CommandResponse::Ack;
+                        },
+                        Command::Reset => {
+                            resp = CommandResponse::Ack;
+                        },
+                    }
+
+                    let resp_ch = msg_link.get_response_channel();
+                    resp_ch.send(resp).await?;
+                },
+                None => {
+                    error!("Received None from command channel");
+                },
+            }
         }
 
         Ok(())

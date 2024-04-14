@@ -292,11 +292,14 @@ impl MqttClient {
                             resp = CommandResponse::Ack;
                         },
                         Command::Set { switch_name, state } => {
+                            let topic = format!("{}/{}/set", self.base_topic, switch_name);
                             let switch_state_str = switch_state_to_str(*state)?;
-                            client.publish(format!("{}/{}/set", self.base_topic, switch_name), QoS::AtLeastOnce, false, switch_state_str).await?;
+                            info!("Publishing: {} {}", topic, switch_state_str);
+                            client.publish(topic, QoS::AtLeastOnce, false, switch_state_str).await?;
                             resp = CommandResponse::Ack;
                         },
                         Command::Stop => {
+                            info!("Stopping MQTT client");
                             should_run = false;
                             *should_run_again = false;
                             resp = CommandResponse::Ack;

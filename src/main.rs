@@ -25,6 +25,8 @@ use libsystemd::daemon;
 use signal_hook::{consts::SIGTERM, iterator::Signals};
 
 use beelay::{core::{BeelayCore}};
+use tokio::signal::unix::signal;
+use tokio::signal::unix::SignalKind;
 
 
 #[derive(Deserialize, Clone)]
@@ -206,7 +208,7 @@ fn launch_core_task(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctr
 }
 
 fn launch_service_task(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address: &str, port: &u16) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
-    let (service, service_ctrl) = build_service(core_ctrl.clone(), &switches, address, port, 64);
+    let (mut service, service_ctrl) = build_service(core_ctrl.clone(), &switches, address, port, 64);
     let service_task_running = Arc::new(AtomicBool::new(true));
     let service_task_running_clone = Arc::clone(&service_task_running);
     tokio::spawn(async move {
@@ -247,6 +249,34 @@ fn launch_signal_monitor(service_ctrl: &BeelayServiceCtrl,
     });
 }
 
+async fn shutdown_beelay(service_ctrl: BeelayServiceCtrl,
+                         service_task_running: Arc<AtomicBool>,
+                         core_ctrl: BeelayCoreCtrl,
+                         core_task_running: Arc<AtomicBool>,
+                         mqtt_ctrl: MqttClientCtrl,
+                         mqtt_task_running: Arc<AtomicBool>) {
+    if let Err(err) = service_ctrl.stop().await {
+        error!("Failed to stop service: {}", err);
+    }
+
+    if let Err(err) = core_ctrl.stop().await {
+        error!("Failed to stop core: {}", err);
+    }
+
+    if let Err(err) = mqtt_ctrl.stop().await {
+        error!("Failed to stop MQTT client: {}", err);
+    }
+
+    info!("Waiting for tasks to complete");
+    let mut waiting_for_task = mqtt_task_running.load(Relaxed);
+    while waiting_for_task {
+        tokio::time::sleep(Duration::from_micros(250)).await;
+        waiting_for_task = mqtt_task_running.load(Relaxed)
+                         & core_task_running.load(Relaxed)
+                         & service_task_running.load(Relaxed);
+    }
+}
+
 async fn monitor_signals(service_ctrl: BeelayServiceCtrl,
                          service_task_running: Arc<AtomicBool>,
                          core_ctrl: BeelayCoreCtrl,
@@ -254,42 +284,27 @@ async fn monitor_signals(service_ctrl: BeelayServiceCtrl,
                          mqtt_ctrl: MqttClientCtrl,
                          mqtt_task_running: Arc<AtomicBool>,
                          should_run: Arc<AtomicBool>) {
-    let mut signals = Signals::new(&[SIGTERM]).unwrap();
-    for sig in signals.pending() {
-        match sig {
-            SIGTERM => {
-                info!("Stopping web service");
-                if let Err(err) = service_ctrl.stop().await {
-                    error!("Failed to stop service: {}", err);
-                }
+    let mut sigterm = signal(SignalKind::terminate()).unwrap();
+    let mut sigint = signal(SignalKind::interrupt()).unwrap();
 
-                info!("Stopping core");
-                if let Err(err) = core_ctrl.stop().await {
-                    error!("Failed to stop core: {}", err);
-                }
+    tokio::select! {
+        _ = sigterm.recv() => info!("Receive shutdown signal"),
+        _ = sigint.recv() => info!("Receive shutdown signal"),
+    };
 
-                info!("Stopping MQTT client");
-                if let Err(err) = mqtt_ctrl.stop().await {
-                    error!("Failed to stop MQTT client: {}", err);
-                }
+    tokio::select! {
+        _ = shutdown_beelay(service_ctrl, service_task_running, core_ctrl, core_task_running, mqtt_ctrl, mqtt_task_running) => info!("Tasks have finished"),
+        _ = sigterm.recv() => {
+            info!("Received additional shutdown signal; forcing");
+            exit(-1);
+        },
+        _ = sigint.recv() => {
+            info!("Received additional shutdown signal; forcing");
+            exit(-1);
+        },
+    };
 
-                info!("Waiting for tasks to complete");
-                let mut waiting_for_task = mqtt_task_running.load(Relaxed);
-                while waiting_for_task {
-                    tokio::time::sleep(Duration::from_micros(250)).await;
-                    waiting_for_task = mqtt_task_running.load(Relaxed)
-                                     & core_task_running.load(Relaxed)
-                                     & service_task_running.load(Relaxed);
-                }
-
-                should_run.store(false, Relaxed);
-                break;
-            }
-            _ => ()
-        }
-    }
-
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    should_run.store(false, Relaxed);
 }
 
 async fn run_beelay_config() {
