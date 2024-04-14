@@ -1,4 +1,7 @@
+use futures::channel::oneshot::channel;
+use rumqttc::tokio_rustls::rustls::internal::msgs;
 use tokio::fs::{self, File};
+use tokio::sync::broadcast::error;
 use tokio::time::Instant;
 use std::fmt::format;
 use std::path::Path;
@@ -175,8 +178,7 @@ pub fn build_core(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctrl:
         switch_names: switch_names.clone(),
         state_cache_locks: Arc::new(state_cache_locks),
         command_rx: rx, 
-        mqtt_ctrl,
-        loopback_ctrl: ctrl.clone()
+        mqtt_ctrl
     };
 
     (core, ctrl)
@@ -186,17 +188,42 @@ pub struct BeelayCore {
     switch_names: Vec<String>,
     state_cache_locks: Arc<HashMap<String, Arc<tokio::sync::Mutex<String>>>>,
     command_rx: mpsc::Receiver<MessageLink<Command, CommandResponse>>,
-    mqtt_ctrl: MqttClientCtrl,
-    loopback_ctrl: BeelayCoreCtrl,
+    mqtt_ctrl: MqttClientCtrl
 }
 
 impl BeelayCore {
     pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut state_rx = self.mqtt_ctrl.establish_state_update_link(128).await?;
+        let state_cache_locks = Arc::clone(&self.state_cache_locks);
+        tokio::spawn(async move {
+            let state_cache_locks = state_cache_locks;
+            loop {
+                match state_rx.recv().await {
+                    Some((switch, state)) => {
+                        debug!("Got state update of {},{}", switch, state);
+                        if let Some(switch_cache_lock) = state_cache_locks.get(&switch) {
+                            let switch_cache = switch_cache_lock.lock().await;
+                            if let Err(err) = write_cache_file(state, SwitchStatus::Confirmed, &switch_cache).await {
+                                error!("Failed to write {} because of {}", switch_cache, err);
+                            }
+                        }
+                        else {
+                            error!("Unrecognized switch name in state update: {}", switch);
+                        }
+                    },
+                    None => {
+                        error!("Got None from state update channel")
+                    },
+                }
+            }
+        });
+
         loop {
             let msg_link = self.command_rx.recv().await.unwrap();
             let resp;
             match msg_link.get_message() {
                 Command::Ping => {
+                    debug!("Pong");
                     resp = CommandResponse::Ack
                 },
                 Command::Get { switch_name } => {

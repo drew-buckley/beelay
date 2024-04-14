@@ -2,9 +2,9 @@ use std::{collections::{HashMap, HashSet, LinkedList}, error::Error, fmt, os::li
 use tokio::{self, time::Instant};
 use tokio::sync::mpsc;
 use rumqttc::{MqttOptions, AsyncClient, QoS, EventLoop, Event};
-use log::{debug, error, info, log_enabled, warn};
+use log::{debug, error, info, log_enabled, trace, warn};
 
-use crate::common::{build_message_link_transactor, MessageLink, MessageLinkTransactor, SwitchState};
+use crate::common::{build_message_link_transactor, str_to_switch_state, switch_state_to_str, MessageLink, MessageLinkTransactor, SwitchState};
 
 #[derive(Debug)]
 pub struct BeelayMqttClientError {
@@ -78,6 +78,27 @@ pub fn build_mqtt_simulation_client(state_update_interval: Duration, msg_queue_c
     };
 
     (sim, ctrl)
+}
+
+pub fn build_mqtt_client(switch_names: Vec<String>, host: String, port: u16, base_topic: String, msg_queue_cap: usize) -> (MqttClient, MqttClientCtrl) {
+    let (mlt, rx) = build_message_link_transactor(msg_queue_cap);
+    let (state_link_tx, state_link_rx) = mpsc::channel(32);
+
+    let ctrl = MqttClientCtrl { 
+        msg_link_transactor: mlt,
+        state_link_tx: state_link_tx
+    };
+
+    let client = MqttClient {
+        command_rx: rx,
+        state_link_rx: state_link_rx,
+        base_topic: base_topic,
+        host: host,
+        port: port,
+        switch_names: switch_names
+    };
+
+    (client, ctrl)
 }
 
 pub struct MqttClientSimulator {
@@ -178,6 +199,188 @@ impl MqttClientSimulator {
         }
 
         return Ok(())
+    }
+}
+
+async fn process_notification(event: Event, base_topic: &str) -> Result<Option<(String, SwitchState)>, Box<dyn Error>> {
+    match event {
+        Event::Incoming(incoming) => {
+            match incoming {
+                rumqttc::Packet::Publish(publish) => {
+                    let switch_name = &publish.topic[base_topic.len()+1..publish.topic.len()];
+                    info!("Got packet for {}", switch_name);
+                    let payload: serde_json::Value = serde_json::from_str(std::str::from_utf8(&publish.payload).unwrap())?;
+                    let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
+                    if let Some(state_value) = payload.get("state") {
+                        let state = state_value.as_str().unwrap().to_string();
+                        let state = state.to_lowercase();
+                        debug!("Extracted state value: {}", state);
+                        let state = str_to_switch_state(&state)?;
+                        return Ok(Some((switch_name.to_string(), state)))
+                    }
+                }
+                _ => {}
+            }
+        },
+        _ => {}
+    }
+    Ok(None)
+}
+
+pub struct MqttClient {
+    command_rx: mpsc::Receiver<MessageLink<Command, CommandResponse>>,
+    state_link_rx: mpsc::Receiver<mpsc::Sender<(String, SwitchState)>>,
+    switch_names: Vec<String>,
+    host: String,
+    port: u16, 
+    base_topic: String
+}
+
+impl MqttClient {
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        let mut state_senders = LinkedList::new();
+        let mut should_run = true;
+        while should_run {
+            if let Err(err) = self.run_mqtt_instance(&mut state_senders, &mut should_run).await {
+                error!("MQTT instance crashed: {}", err);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn run_mqtt_instance(&mut self, state_senders: &mut LinkedList<mpsc::Sender<(String, SwitchState)>>, should_run_again: &mut bool) -> Result<(), Box<dyn Error>> {
+        info!("Connecting to MQTT broker @ {}:{}", self.host, self.port);
+        let mut mqttoptions = MqttOptions::new("rumqtt-async", self.host.clone(), self.port.clone());
+        mqttoptions.set_keep_alive(Duration::from_secs(1));
+
+        let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+
+        for switch in &self.switch_names{
+            client.subscribe(format!("{}/{}", self.base_topic, switch), QoS::AtMostOnce).await?;
+        }
+
+        info!("MQTT broker connected!");
+
+        let (event_tx, mut event_rx) = mpsc::channel(256);
+
+        tokio::spawn(async move {
+            info!("Starting MQTT event loop");
+            loop {
+                match eventloop.poll().await {
+                    Ok(event) => {
+                        if let Err(err) = event_tx.send(event).await {
+                            error!("Failed to pass along MQTT event: {}", err);
+                        }
+                    }
+                    Err(err) => {
+                        error!("MQTT event loop crashed: {}", err);
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mut should_run = true;
+        while should_run {
+            match self.command_rx.try_recv() {
+                Ok(msg_link) => {
+                    let resp;
+                    match msg_link.get_message() {
+                        Command::Ping => {
+                            debug!("Pong");
+                            resp = CommandResponse::Ack;
+                        },
+                        Command::Set { switch_name, state } => {
+                            let switch_state_str = switch_state_to_str(*state)?;
+                            client.publish(format!("{}/{}/set", self.base_topic, switch_name), QoS::AtLeastOnce, false, switch_state_str).await?;
+                            resp = CommandResponse::Ack;
+                        },
+                        Command::Stop => {
+                            should_run = false;
+                            *should_run_again = false;
+                            resp = CommandResponse::Ack;
+                        },
+                        Command::Reset => {
+                            should_run = false;
+                            resp = CommandResponse::Ack;
+                        },
+                    }
+
+                    let resp_ch = msg_link.get_response_channel();
+                    resp_ch.send(resp).await?;
+                },
+                Err(err) => match err {
+                    mpsc::error::TryRecvError::Empty => (),
+                    mpsc::error::TryRecvError::Disconnected => {
+                        return Err(
+                            Box::new(
+                                BeelayMqttClientError::new("Command channel disconnected")));
+                    },
+                }
+            }
+
+            self.process_next_state_link_request(state_senders).await?;
+            self.process_next_event(&mut event_rx, state_senders).await?;
+
+            tokio::time::sleep(Duration::from_micros(10)).await;
+        }
+
+        Ok(())
+    }
+
+    async fn process_next_state_link_request(&mut self, state_senders: &mut LinkedList<mpsc::Sender<(String, SwitchState)>>) -> Result<(), Box<dyn Error>> {
+        match self.state_link_rx.try_recv() {
+            Ok(tx) => {
+                state_senders.push_back(tx);
+            },
+            Err(err) => match err {
+                mpsc::error::TryRecvError::Empty => (),
+                mpsc::error::TryRecvError::Disconnected => {
+                    return Err(
+                        Box::new(
+                            BeelayMqttClientError::new("State link channel disconnected")));
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn process_next_event(&mut self, event_rx: &mut mpsc::Receiver<Event>, state_senders: &mut LinkedList<mpsc::Sender<(String, SwitchState)>>) -> Result<(), Box<dyn Error>> {
+        match event_rx.try_recv() {
+            Ok(event) => {
+                let event_cnt = match process_notification(event, &self.base_topic).await {
+                    Ok(event_cnt) => event_cnt,
+                    Err(err) => {
+                        warn!("Failed to process MQTT event content: {}", err);
+                        // Tolerate these failures since this can come from
+                        // junk input from our connected friends.
+                        return Ok(())
+                    }
+                };
+                if let Some(event_cnt) = event_cnt {
+                    if state_senders.len() > 0 {
+                        for sender in state_senders {
+                            sender.send(event_cnt.clone()).await?;
+                        }
+                    }
+                    else {
+                        error!("No state links! MQTT client yells into the abyss");
+                    }
+                }
+            },
+            Err(err) => match err {
+                mpsc::error::TryRecvError::Empty => (),
+                mpsc::error::TryRecvError::Disconnected => {
+                    return Err(
+                        Box::new(
+                            BeelayMqttClientError::new("Event channel disconnected")));
+                },
+            }
+        }
+
+        Ok(())
     }
 }
 

@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering::Relaxed;
 
 use beelay::core::build_core;
 use beelay::core::BeelayCoreCtrl;
+use beelay::mqtt_client::build_mqtt_client;
 use beelay::mqtt_client::build_mqtt_simulation_client;
 use beelay::mqtt_client::MqttClientCtrl;
 use beelay::service::build_service;
@@ -131,7 +132,7 @@ async fn run_beelay() {
     }
     let switches = switches;
 
-    let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(args.simulate);
+    let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(switches.clone(), broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
     let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
 
@@ -139,13 +140,23 @@ async fn run_beelay() {
     launch_signal_monitor(&service_ctrl, &service_task_running, &core_ctrl, &core_task_running, &mqtt_ctrl, &mqtt_task_running, &should_run);
     
     while should_run.load(Relaxed) {
+        if let Err(err) = mqtt_ctrl.ping().await {
+            error!("MQTT ping failed: {}", err);
+        }
+        if let Err(err) = core_ctrl.ping().await {
+            error!("Core ping failed: {}", err);
+        }
+        if let Err(err) = service_ctrl.ping().await {
+            error!("Service ping failed: {}", err);
+        }
+
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     info!("Beelay done!")
 }
 
-fn launch_mqtt_task(simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
+fn launch_mqtt_task(switch_names: Vec<String>, broker_host: String, broker_port: u16, base_topic: String, simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
     let mqtt_ctrl;
     let mqtt_task_running = Arc::new(AtomicBool::new(true));
     let mqtt_task_running_clone = Arc::clone(&mqtt_task_running);
@@ -163,7 +174,16 @@ fn launch_mqtt_task(simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
         });
     }
     else {
-        todo!()
+        let mqtt_task_running = mqtt_task_running_clone;
+        let mut mqtt_client;
+        (mqtt_client, mqtt_ctrl) = build_mqtt_client(switch_names, broker_host, broker_port, base_topic, 64);
+        tokio::spawn(async move {
+            if let Err(err) = mqtt_client.run().await {
+                error!("MQTT client crashed: {}", err);
+            }
+
+            mqtt_task_running.store(false, Relaxed);
+        });
     }
 
     (mqtt_ctrl, mqtt_task_running)

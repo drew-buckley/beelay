@@ -7,7 +7,7 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'beelay'",
+            "name": "Debug executable 'beelay (simulate)'",
             "cargo": {
                 "args": [
                     "build",
@@ -25,6 +25,28 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_LOG": "debug"
+            },
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'beelay (w/ broker)'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=beelay",
+                    "--package=beelay"
+                ],
+                "filter": {
+                    "name": "beelay",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "info"
             },
         },
         {
