@@ -1,8 +1,6 @@
-use std::{error::Error, fmt, collections::{VecDeque, HashMap}, sync::Arc};
-use futures::SinkExt;
-use http::Method;
+use std::{error::Error, collections::{VecDeque, HashMap}};
 use hyper::{Response, Body, StatusCode};
-use log::{debug, error, info, log_enabled, warn};
+use log::debug;
 
 use crate::common::{GENERIC_404_PAGE, PATH_CSS_DIR, PATH_CSS_MAIN_FILE, PATH_CSS_MAIN_PATH};
 

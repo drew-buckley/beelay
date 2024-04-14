@@ -1,10 +1,9 @@
-use std::{error::Error, fmt, collections::{VecDeque, HashMap}, sync::Arc};
+use std::{error::Error, fmt, collections::{VecDeque, HashMap}};
 use hyper::{Response, Body, StatusCode, Method};
 use serde_json;
-use serde::{Deserialize};
-use log::{debug, error, info, log_enabled, warn};
+use log::debug;
 
-use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState}, core::{BeelayCore, BeelayCoreCtrl, BeelayCoreError, BeelayCoreErrorType}};
+use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState}, core::{BeelayCoreCtrl, BeelayCoreError, BeelayCoreErrorType}};
 
 const SWITCH_API_ELEM_NAME: &str = "switch";
 const SWITCH_API_STATE_PARAM_NAME: &str = "state";

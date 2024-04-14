@@ -1,9 +1,5 @@
-use futures::channel::oneshot::channel;
-use rumqttc::tokio_rustls::rustls::internal::msgs;
-use tokio::fs::{self, File};
-use tokio::sync::broadcast::error;
+use tokio::fs;
 use tokio::time::Instant;
-use std::fmt::format;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +7,7 @@ use std::{error::Error, fmt};
 use std::collections::HashMap;
 use tokio;
 use tokio::sync::mpsc;
-use log::{debug, error, info, log_enabled, warn};
+use log::{debug, error, info, warn};
 
 use crate::common::{build_message_link_transactor, str_to_switch_state, str_to_switch_status, switch_state_to_str, switch_status_to_str, MessageLink, MessageLinkTransactor, SwitchState, SwitchStatus};
 use crate::mqtt_client::MqttClientCtrl;
@@ -86,7 +82,7 @@ enum CommandResponse {
     Ack,
     SwitchState{ name: String, state: Option<SwitchState>, status: SwitchStatus },
     SwitchEnumeration{ switches: Vec<String> },
-    Error{ error: String }
+    // Error{ error: String }
 }
 
 impl CommandResponse {
@@ -116,9 +112,9 @@ impl fmt::Display for CommandResponse {
                 let switches_str = format!("[{}]", switches.join(", "));
                 write!(f, "CommandResponse::SwitchEnumeration{{ switches: {} }}", switches_str)
             }
-            CommandResponse::Error{ error } => {
-                write!(f, "CommandResponse::Error{{ error: {} }}", error)
-            }
+            // CommandResponse::Error{ error } => {
+            //     write!(f, "CommandResponse::Error{{ error: {} }}", error)
+            // }
         }
     }
 }
@@ -140,7 +136,7 @@ async fn write_cache_file(state: SwitchState, status: SwitchStatus, switch_cache
 }
 
 async fn read_cache_file(switch_cache: &str) -> Result<(Option<SwitchState>, SwitchStatus), Box<dyn Error>> {
-    let switch_cache_path = Path::new((switch_cache).clone());
+    let switch_cache_path = Path::new(switch_cache);
 
     debug!("Reading {}", switch_cache);
 
@@ -292,13 +288,6 @@ impl BeelayCore {
         let switch_state = read_cache_file(&switch_cache).await?;
         Ok(switch_state)
     }
-
-    async fn write_cache_file(&self, switch_name: &str, state: SwitchState, status: SwitchStatus) -> Result<(), Box<dyn Error>> {
-        let switch_cache_lock = self.get_cache_file(switch_name)?;
-        let switch_cache = switch_cache_lock.lock().await;
-        write_cache_file(state, status, &switch_cache).await?;
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -419,35 +408,3 @@ impl BeelayCoreCtrl {
                 BeelayCoreErrorType::InternalError))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // async fn perform_test_routine(beelay: &BeelayCoreCtrl) -> Result<(), Box<dyn Error>> {
-
-    //     for state in vec![SwitchState::On, SwitchState::Off, SwitchState::On, SwitchState::Off] {
-    //         beelay.set_switch_state("switch1", state, 0).await
-    //             .expect("Set switch failed");
-    //         let retrieved_state = beelay.get_switch_state("switch1").await
-    //             .expect("Get switch failed");
-    //         info!("State: {}", state.to_string());
-    //         assert!(state == retrieved_state);
-    //     }
-
-    //     beelay.stop().await?;
-
-    //     Ok(())
-    // }
-
-    // #[tokio::test]
-    // async fn test_sim_end2end() {
-    //     let mut log_builder = env_logger::Builder::from_env(
-    //         env_logger::Env::default().default_filter_or("debug"));
-    //     log_builder.init();
-
-    //     let beelay = BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", RunMode::Simulate);
-    //     tokio::join!(beelay.run(), perform_test_routine(&beelay));
-    // }
-}
- 

@@ -1,4 +1,3 @@
-use std::clone;
 use std::path::Path;
 use std::io::Write;
 use std::process::exit;
@@ -13,18 +12,13 @@ use beelay::mqtt_client::build_mqtt_client;
 use beelay::mqtt_client::build_mqtt_simulation_client;
 use beelay::mqtt_client::MqttClientCtrl;
 use beelay::service::build_service;
-use beelay::service::BeelayService;
 use beelay::service::BeelayServiceCtrl;
 use clap::Parser;
-use serde::ser;
 use serde::Deserialize;
 use tokio::fs;
-use tokio::join;
-use log::{debug, error, info, log_enabled, warn};
+use log::{error, info, warn};
 use libsystemd::daemon;
-use signal_hook::{consts::SIGTERM, iterator::Signals};
 
-use beelay::{core::{BeelayCore}};
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
 

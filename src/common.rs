@@ -128,7 +128,7 @@ impl<T1, T2> MessageLink<T1, T2> {
 
 pub fn build_message_link<T1, T2>(message: T1, cap: usize) -> (MessageLink<T1, T2>, mpsc::Receiver<T2>) {
     let tx: mpsc::Sender<T2>;
-    let mut rx: mpsc::Receiver<T2>;
+    let rx: mpsc::Receiver<T2>;
     (tx, rx) = mpsc::channel(cap);
 
     let msg_link = MessageLink{ message: message, resp_channel: tx };
@@ -153,7 +153,7 @@ impl<T1, T2> MessageLinkTransactor<T1, T2> {
 
 pub fn build_message_link_transactor<T1, T2>(cap: usize) -> (MessageLinkTransactor<T1, T2>, mpsc::Receiver<MessageLink<T1, T2>>) {
     let tx: mpsc::Sender<MessageLink<T1, T2>>;
-    let mut rx: mpsc::Receiver<MessageLink<T1, T2>>;
+    let rx: mpsc::Receiver<MessageLink<T1, T2>>;
     (tx, rx) = mpsc::channel(cap);
 
     let msg_link_trans = MessageLinkTransactor{ tx: tx };

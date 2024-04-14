@@ -1,8 +1,8 @@
-use std::{collections::{HashMap, HashSet, LinkedList}, error::Error, fmt, os::linux::raw::stat, sync::Arc, time::Duration};
+use std::{collections::{HashMap, LinkedList}, error::Error, fmt, time::Duration};
 use tokio::{self, time::Instant};
 use tokio::sync::mpsc;
-use rumqttc::{MqttOptions, AsyncClient, QoS, EventLoop, Event};
-use log::{debug, error, info, log_enabled, trace, warn};
+use rumqttc::{MqttOptions, AsyncClient, QoS, Event};
+use log::{debug, error, info, warn};
 
 use crate::common::{build_message_link_transactor, str_to_switch_state, switch_state_to_str, MessageLink, MessageLinkTransactor, SwitchState};
 
