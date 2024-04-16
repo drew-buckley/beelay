@@ -17,7 +17,6 @@ use clap::Parser;
 use serde::Deserialize;
 use tokio::fs;
 use log::{error, info, warn};
-use libsystemd::daemon;
 
 use tokio::signal::unix::signal;
 use tokio::signal::unix::SignalKind;
@@ -47,17 +46,21 @@ struct Config {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    // Path to configuration TOML file.
+    /// Path to configuration TOML file.
     #[clap(short, long, default_value = "/etc/beelay/beelay.toml")]
     config: String,
 
     /// Use syslog.
-   #[clap(long, action)]
-   syslog: bool,
+    #[clap(long, action)]
+    syslog: bool,
+
+    /// Notify systemd.
+    #[clap(long, action)]
+    sd_notify: bool,
 
     /// Simulate for test
-   #[clap(long, action)]
-   simulate: bool
+    #[clap(long, action)]
+    simulate: bool
 }
 
 #[derive(Parser, Debug)]
@@ -133,8 +136,12 @@ async fn run_beelay() {
     let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
 
     let should_run = Arc::new(AtomicBool::new(true));
-    launch_signal_monitor(&service_ctrl, &service_task_running, &core_ctrl, &core_task_running, &mqtt_ctrl, &mqtt_task_running, &should_run);
+    launch_signal_monitor(&service_ctrl, &service_task_running, &core_ctrl, &core_task_running, &mqtt_ctrl, &mqtt_task_running, &should_run, args.sd_notify);
     
+    if args.sd_notify {
+        notify_systemd_ready();
+    }
+
     while should_run.load(Relaxed) {
         if let Err(err) = mqtt_ctrl.ping().await {
             error!("MQTT ping failed: {}", err);
@@ -144,6 +151,10 @@ async fn run_beelay() {
         }
         if let Err(err) = service_ctrl.ping().await {
             error!("Service ping failed: {}", err);
+        }
+
+        if args.sd_notify {
+            pet_systemd_watchdog();
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -223,7 +234,8 @@ fn launch_signal_monitor(service_ctrl: &BeelayServiceCtrl,
                          core_task_running: &Arc<AtomicBool>,
                          mqtt_ctrl: &MqttClientCtrl,
                          mqtt_task_running: &Arc<AtomicBool>,
-                         should_run: &Arc<AtomicBool>) {
+                         should_run: &Arc<AtomicBool>,
+                         sd_notify: bool) {
     let service_ctrl = service_ctrl.clone();
     let service_task_running = Arc::clone(service_task_running);
     let core_ctrl = core_ctrl.clone();
@@ -239,7 +251,8 @@ fn launch_signal_monitor(service_ctrl: &BeelayServiceCtrl,
                         core_task_running, 
                         mqtt_client_ctrl, 
                         mqtt_task_running, 
-                        should_run).await;
+                        should_run,
+                        sd_notify).await;
     });
 }
 
@@ -277,7 +290,8 @@ async fn monitor_signals(service_ctrl: BeelayServiceCtrl,
                          core_task_running: Arc<AtomicBool>,
                          mqtt_ctrl: MqttClientCtrl,
                          mqtt_task_running: Arc<AtomicBool>,
-                         should_run: Arc<AtomicBool>) {
+                         should_run: Arc<AtomicBool>,
+                         sd_notify: bool) {
     let mut sigterm = signal(SignalKind::terminate()).unwrap();
     let mut sigint = signal(SignalKind::interrupt()).unwrap();
 
@@ -285,6 +299,10 @@ async fn monitor_signals(service_ctrl: BeelayServiceCtrl,
         _ = sigterm.recv() => info!("Receive shutdown signal"),
         _ = sigint.recv() => info!("Receive shutdown signal"),
     };
+
+    if sd_notify {
+        notify_systemd_stopping();
+    }
 
     tokio::select! {
         _ = shutdown_beelay(service_ctrl, service_task_running, core_ctrl, core_task_running, mqtt_ctrl, mqtt_task_running) => info!("Tasks have finished"),
@@ -373,6 +391,36 @@ async fn apply_external_config(config: &Config, external_config_path: &str) -> C
     }
 
     new_config
+}
+
+#[cfg(feature = "systemd")]
+fn notify_systemd_ready() {
+    let _ = libsystemd::daemon::notify(false, &[libsystemd::daemon::NotifyState::Ready]);
+}
+
+#[cfg(not(feature = "systemd"))]
+fn notify_systemd_ready() {
+    warn!("Beelay not built with systemd support; cannot notify ready!")
+}
+
+#[cfg(feature = "systemd")]
+fn pet_systemd_watchdog() {
+    let _ = libsystemd::daemon::notify(false, &[libsystemd::daemon::NotifyState::Watchdog]);
+}
+
+#[cfg(not(feature = "systemd"))]
+fn pet_systemd_watchdog() {
+    warn!("Beelay not built with systemd support; cannot pet watchdog!")
+}
+
+#[cfg(feature = "systemd")]
+fn notify_systemd_stopping() {
+    let _ = libsystemd::daemon::notify(false, &[libsystemd::daemon::NotifyState::Stopping]);
+}
+
+#[cfg(not(feature = "systemd"))]
+fn notify_systemd_stopping() {
+    warn!("Beelay not built with systemd support; cannot notify stopping!")
 }
 
 #[cfg(test)]

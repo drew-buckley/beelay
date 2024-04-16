@@ -1,14 +1,12 @@
 [Unit]
 After=network.target
 Description=Beelay HTTP to MQTT Bridge
-DefaultDependencies=no
 
 [Service]
-Type=exec
-ExecStart=beelay --syslog
-Restart=on-failure
-KillMode=process
-SendSIGKILL=no
+Type=notify
+ExecStart=beelay --syslog --sd-notify
+Restart=always
+WatchdogSec=20
 
 [Install]
 WantedBy=multi-user.target
