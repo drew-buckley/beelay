@@ -9,23 +9,23 @@ There's also a frontend now! Its hacky as hellll, and it lags, and it is just ge
 
 ## API Usage
 ```
-~$ curl  --request POST "pi.local:9999/api/?switch=Bedroom%20TV&state=OFF" ; echo
+~$ curl  --request POST "pi.local:9999/api/switch/Living%20Room%20Lights/?state=on" ; echo
 {"status":"success"}
 ```
 
 ```
-~$ curl  --request GET "pi.local:9999/api/?switch=Bedroom%20TV" ; echo
-{"status":"success","switch_state":"OFF"}
+~$ curl  --request GET "pi.local:9999/api/switch/Living%20Room%20Lights" ; echo
+{"status":"success","state":"on"}
 ```
 
 ```
-~$ curl  --request POST "pi.local:9999/api/?switch=Bedroom%20TV&state=ON" ; echo
+~$ curl  --request POST "pi.local:9999/api/switch/Living%20Room%20Lights/?state=off" ; echo
 {"status":"success"}
 ```
 
 ```
-~$ curl  --request GET "pi.local:9999/api/?switch=Bedroom%20TV" ; echo
-{"status":"success","switch_state":"ON"}
+~$ curl  --request GET "pi.local:9999/api/switch/Living%20Room%20Lights" ; echo
+{"status":"success","state":"off"}
 ```
 
 Example of an error:
@@ -38,7 +38,8 @@ Example of an error:
 [http://pi.local:9999/client](http://pi.local:9999/client)
 
 ## Configuration Example
-``` beelay.toml
+### beelay.toml
+```
 [service]
 bind_address = "0.0.0.0"
 port = 9999
@@ -51,7 +52,8 @@ port = 1883
 topic = "zigbee2mqtt"
 ```
 
-``` beelay.service
+### systemd
+```
 [Unit]
 After=network.target
 Description=Beelay HTTP to MQTT Bridge
