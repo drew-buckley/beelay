@@ -136,6 +136,9 @@ async fn run_beelay() {
     }
     let switches = switches;
 
+    fs::create_dir(&cache_dir).await
+        .expect(format!("Failed to create cache directory: {}", cache_dir).as_str());
+
     let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(switches.clone(), broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
     let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
@@ -174,6 +177,7 @@ fn launch_mqtt_task(switch_names: Vec<String>, broker_host: String, broker_port:
     let mqtt_task_running_clone = Arc::clone(&mqtt_task_running);
 
     if simulate {
+        warn!("Running in simulation mode! MQTT broker will be ignored");
         let mqtt_task_running = mqtt_task_running_clone;
         let mut mqtt_client;
         (mqtt_client, mqtt_ctrl) = build_mqtt_simulation_client(Duration::from_millis(1000), 64);
