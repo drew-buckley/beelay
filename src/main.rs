@@ -122,7 +122,6 @@ async fn run_beelay() {
     let service_config = config.service.unwrap();
     let bind_address = service_config.bind_address.unwrap();
     let bind_port = service_config.port.unwrap();
-    let switches_str = service_config.switches.unwrap();
     let cache_dir = service_config.cache_dir.unwrap();
 
     let broker_config = config.mqttbroker.unwrap();
@@ -131,8 +130,12 @@ async fn run_beelay() {
     let base_topic = broker_config.topic.unwrap();
 
     let mut switches: Vec<String> = Vec::new();
-    for switch in switches_str.split(',') {
-        switches.push(switch.to_string())
+    let switches_str = service_config.switches;
+    if switches_str.is_some() {
+        let switches_str = switches_str.unwrap();
+        for switch in switches_str.split(',') {
+            switches.push(switch.to_string())
+        }
     }
     let switches = switches;
 
