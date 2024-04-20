@@ -6,8 +6,7 @@ use std::time::Duration;
 use std::{sync::Arc, error::Error, net::SocketAddr};
 use std::sync::atomic::Ordering::Relaxed;
 
-use http::Method;
-use log::{debug, error, info, log_enabled, warn};
+use log::{debug, error, info};
 
 use hyper::{Body, Request, Response, Server, StatusCode};
 use hyper::server::conn::AddrStream;
@@ -17,9 +16,7 @@ use tokio::time::Instant;
 
 use crate::common::{build_message_link_transactor, MessageLink, MessageLinkTransactor};
 use crate::core::BeelayCoreCtrl;
-use crate::frontend;
 use crate::{api::BeelayApi, frontend::BeelayFrontend, common::{GENERIC_404_PAGE, API_ELEM, CLIENT_ELEM}};
-
 
 #[derive(Debug)]
 pub struct BeelayServiceError {
@@ -65,15 +62,13 @@ impl fmt::Display for Command {
 
 #[derive(Clone)]
 enum CommandResponse {
-    Ack,
-    Error{ error: String }
+    Ack
 }
 
 impl CommandResponse {
     fn is_ack(&self) -> bool {
         match &self {
-            CommandResponse::Ack => true,
-            _ => false
+            CommandResponse::Ack => true
         }
     }
 }
@@ -83,9 +78,6 @@ impl fmt::Display for CommandResponse {
         match self {
             CommandResponse::Ack => {
                 write!(f, "CommandResponse::Ack")
-            },
-            CommandResponse::Error{ error } => {
-                write!(f, "CommandResponse::Error{{ error: {} }}", error)
             }
         }
     }
@@ -127,7 +119,7 @@ async fn perform_http_service(addr: &SocketAddr,
                               req_sender: Arc<tokio::sync::Mutex<async_channel::Sender<Request<Body>>>>,
                               resp_receiver: Arc<tokio::sync::Mutex<async_channel::Receiver<Response<Body>>>>) -> Result<(), Box<dyn Error>> {
     let req_sender = Arc::clone(&req_sender);
-    let make_service = make_service_fn(move |conn: &AddrStream| {
+    let make_service = make_service_fn(move |_conn: &AddrStream| {
         let req_sender = Arc::clone(&req_sender);
         let resp_receiver = Arc::clone(&resp_receiver);
         // let addr = conn.remote_addr();

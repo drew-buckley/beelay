@@ -35,15 +35,13 @@ enum Command {
 
 #[derive(Clone)]
 enum CommandResponse {
-    Ack,
-    Error{ error: String }
+    Ack
 }
 
 impl CommandResponse {
     fn is_ack(&self) -> bool {
         match &self {
-            CommandResponse::Ack => true,
-            _ => false
+            CommandResponse::Ack => true
         }
     }
 }
@@ -53,9 +51,6 @@ impl fmt::Display for CommandResponse {
         match self {
             CommandResponse::Ack => {
                 write!(f, "CommandResponse::Ack")
-            },
-            CommandResponse::Error{ error } => {
-                write!(f, "CommandResponse::Error{{ error: {} }}", error)
             }
         }
     }
@@ -254,7 +249,7 @@ impl MqttClient {
         let mut mqttoptions = MqttOptions::new("rumqtt-async", self.host.clone(), self.port.clone());
         mqttoptions.set_keep_alive(Duration::from_secs(1));
 
-        let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
         for switch in &self.switch_names{
             client.subscribe(format!("{}/{}", self.base_topic, switch), QoS::AtMostOnce).await?;

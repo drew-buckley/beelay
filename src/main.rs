@@ -1,3 +1,4 @@
+use std::env;
 use std::path::Path;
 use std::io::Write;
 use std::process::exit;
@@ -71,37 +72,41 @@ struct ConfigModeArgs {
     output: Option<String>
 }
 
-const DEFAULT_CONFIG: &str = "
-[service]
-bind_address = \"127.0.0.1\"
-port = 9999
-#switches = \"example_switch1,example_switch2\"
-switches = \"example_switch1,example_switch2\"
-#cache_dir = \"/run/beelay\"
-cache_dir = \"test/run/\"
-
-[mqttbroker]
-host = \"localhost\"
-port = 1883
-topic = \"zigbee2mqtt\"
-";
+const DEFAULT_CONFIG: &str = include_str!("../beelay-default.toml");
+const RUN_EXE_CONTEXT: &str = "RUN";
+const CONFIG_EXE_CONTEXT: &str = "CONFIG";
 
 #[tokio::main]
 async fn main() {
-    let exe = std::env::current_exe()
-        .expect("Failed to get current exe from env")
-        .file_name()
-        .expect("Failed to derive exe base name")
-        .to_owned();
+    let exe_context = match env::var("BEELAY_EXE_CONTEXT") {
+        Ok(var) => var,
+        Err(_) => {
+            let exe = std::env::current_exe()
+                .expect("Failed to get current exe from env")
+                .file_name()
+                .expect("Failed to derive exe base name")
+                .to_owned();
 
-    if exe == "beelay" {
+            if exe == "beelay" {
+                RUN_EXE_CONTEXT.to_string()
+            }
+            else if exe == "beelay-config" {
+                CONFIG_EXE_CONTEXT.to_string()
+            }
+            else {
+                panic!("Invalid exe name: {}", exe.to_string_lossy());
+            }
+        }
+    };
+
+    if exe_context == RUN_EXE_CONTEXT {
         run_beelay().await;
     }
-    else if exe == "beelay-config" {
+    else if exe_context == CONFIG_EXE_CONTEXT {
         run_beelay_config().await;
     }
     else {
-        panic!("Invalid exe name: {}", exe.to_string_lossy());
+        panic!("Invalid execution context name: {}", exe_context);
     }
 }
 

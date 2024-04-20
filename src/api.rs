@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, collections::{VecDeque, HashMap}};
+use std::{error::Error, collections::{VecDeque, HashMap}};
 use hyper::{Response, Body, StatusCode, Method};
 use serde_json;
 use log::debug;
@@ -8,25 +8,6 @@ use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState}, cor
 const SWITCH_API_ELEM_NAME: &str = "switch";
 const SWITCH_API_STATE_PARAM_NAME: &str = "state";
 const SWITCH_API_DELAY_PARAM_NAME: &str = "delay";
-
-#[derive(Debug)]
-struct BeelyApiError {
-    message: String
-}
-
-impl Error for BeelyApiError {}
-
-impl BeelyApiError {
-    fn new(message: &str) -> BeelyApiError {
-        BeelyApiError{ message: message.to_string() }
-    }
-}
-
-impl fmt::Display for BeelyApiError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "BeelyApiError: {}", self.message)
-    }
-}
 
 fn generate_response(json: &str, status_code: StatusCode) -> Response<Body> {
     debug!("Generating response; JSON: {}; status code: {}", json, status_code);
@@ -144,7 +125,7 @@ impl BeelayApi {
             None => {}
         }
         
-        let (state, status) = match self.core_ctrl.get_switch_state(&switch_name).await {
+        let (state, _) = match self.core_ctrl.get_switch_state(&switch_name).await {
             Ok(state) => state,
             Err(err) => {
                 match err.downcast_ref::<BeelayCoreError>() {
@@ -255,47 +236,3 @@ impl BeelayApi {
         Ok(generate_success_response(None))
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use hyper::body;
-
-//     use crate::core::RunMode;
-
-//     use super::*;
-
-//     async fn perform_test_routine(api: &BeelayApi, beelay: Arc<BeelayCore>) -> Result<(), Box<dyn Error>> {
-
-//         for state in vec!["on", "off", "on", "off"] {
-//             let path_vec = vec!["switch".to_string(), "switch1".to_string()];
-//             api.handle_post(&path_vec, &vec![("state".to_string(), state.to_string())]).await
-//                 .expect("Set switch failed");
-//             let resp = api.handle_get(&path_vec, &Vec::new()).await
-//                 .expect("Get switch failed");
-
-//             let body = body::to_bytes(resp).await?;
-//             let body = std::str::from_utf8(&body)?;
-//             let content: HashMap<String, String> = serde_json::from_str(body)?;
-//             let retrieved_state = content.get("state")
-//                 .expect("Failed to retrieve state");
-//             info!("State: {}", state.to_string());
-//             assert!(state == retrieved_state);
-//         }
-
-//         beelay.stop().await?;
-
-//         Ok(())
-//     }
-
-//     #[tokio::test]
-//     async fn test_sim_end2end() {
-//         let mut log_builder = env_logger::Builder::from_env(
-//             env_logger::Env::default().default_filter_or("debug"));
-//         log_builder.init();
-
-//         let beelay = Arc::new(BeelayCore::new(&vec!["switch1".to_string(), "switch2".to_string()], "./test/run/", RunMode::Simulate));
-//         let beelay_ref = Arc::clone(&beelay);
-//         let api = BeelayApi::new(beelay);
-//         tokio::join!(beelay_ref.run(), perform_test_routine(&api, Arc::clone(&beelay_ref)));
-//     }
-// }
