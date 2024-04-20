@@ -82,7 +82,7 @@ enum CommandResponse {
     Ack,
     SwitchState{ name: String, state: Option<SwitchState>, status: SwitchStatus },
     SwitchEnumeration{ switches: Vec<String> },
-    // Error{ error: String }
+    Error{ error: String }
 }
 
 impl CommandResponse {
@@ -112,9 +112,9 @@ impl fmt::Display for CommandResponse {
                 let switches_str = format!("[{}]", switches.join(", "));
                 write!(f, "CommandResponse::SwitchEnumeration{{ switches: {} }}", switches_str)
             }
-            // CommandResponse::Error{ error } => {
-            //     write!(f, "CommandResponse::Error{{ error: {} }}", error)
-            // }
+            CommandResponse::Error{ error } => {
+                write!(f, "CommandResponse::Error{{ error: {} }}", error)
+            }
         }
     }
 }
@@ -225,8 +225,15 @@ impl BeelayCore {
                     resp = CommandResponse::Ack
                 },
                 Command::Get { switch_name } => {
-                    let (state, status) = self.read_cache_file(switch_name).await?;
-                    resp = CommandResponse::SwitchState { name: switch_name.to_string(), state, status };
+                    match self.read_cache_file(switch_name).await {
+                        Ok((state, status)) => {
+                            resp = CommandResponse::SwitchState { name: switch_name.to_string(), state, status };
+                        },
+                        Err(err) => {
+                            resp = CommandResponse::Error { error: err.to_string() }
+                        }
+                    };
+                    
                 }
                 Command::Set { switch_name, state, delay } => {
                     info!("Setting {} to {} (delay {}s)", switch_name, state, delay);
