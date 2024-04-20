@@ -1,0 +1,10 @@
+[service]
+bind_address = "127.0.0.1"
+port = 9999
+#switches = "example_switch1,example_switch2"
+cache_dir = "/run/beelay"
+
+[mqttbroker]
+host = "127.0.0.1"
+port = 1883
+topic = "zigbee2mqtt"

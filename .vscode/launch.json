@@ -1,0 +1,72 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'beelay (simulate)'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=beelay",
+                    "--package=beelay"
+                ],
+                "filter": {
+                    "name": "beelay",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "--simulate"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "debug"
+            },
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'beelay (w/ broker)'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=beelay",
+                    "--package=beelay"
+                ],
+                "filter": {
+                    "name": "beelay",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "RUST_LOG": "info"
+            },
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'beelay'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=beelay",
+                    "--package=beelay"
+                ],
+                "filter": {
+                    "name": "beelay",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

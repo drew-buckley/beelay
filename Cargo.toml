@@ -1,7 +1,8 @@
 [package]
 name = "beelay"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+authors = ["Drew Buckley <me@drew-buckley.com>"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,4 +19,11 @@ form_urlencoded = "1.0.1"
 serde = {version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 http = "*"
-rumqttc = "0.21"
+rumqttc = "0.23"
+async-channel = "2.1"
+libsystemd = {version = "0.7", optional = true}
+const_format = "0.2"
+
+[features]
+default = []
+systemd = ["libsystemd"]
