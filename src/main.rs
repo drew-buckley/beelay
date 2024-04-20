@@ -136,8 +136,12 @@ async fn run_beelay() {
     }
     let switches = switches;
 
-    fs::create_dir(&cache_dir).await
-        .expect(format!("Failed to create cache directory: {}", cache_dir).as_str());
+    let cache_dir_exists = fs::try_exists(&cache_dir).await
+        .expect(format!("Failed to check cache directory existence: {}", cache_dir).as_str());
+    if !cache_dir_exists {
+        fs::create_dir(&cache_dir).await
+            .expect(format!("Failed to create cache directory: {}", cache_dir).as_str());
+    }
 
     let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(switches.clone(), broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
