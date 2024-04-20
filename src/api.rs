@@ -40,6 +40,10 @@ fn generate_switch_list_response(switches: &Vec<String>) -> Response<Body> {
     generate_response(&json, StatusCode::OK)
 }
 
+fn resolve_spaces(s: &str) -> String {
+    s.replace("%20", " ")
+}
+
 pub struct BeelayApi {
     core_ctrl: BeelayCoreCtrl
 }
@@ -125,7 +129,7 @@ impl BeelayApi {
             None => {}
         }
         
-        let (state, _) = match self.core_ctrl.get_switch_state(&switch_name).await {
+        let (state, _) = match self.core_ctrl.get_switch_state(&resolve_spaces(&switch_name)).await {
             Ok(state) => state,
             Err(err) => {
                 match err.downcast_ref::<BeelayCoreError>() {
@@ -218,7 +222,7 @@ impl BeelayApi {
         }
         let delay = delay.unwrap();
 
-        if let Err(err) = self.core_ctrl.set_switch_state(switch_name, new_state, delay).await {
+        if let Err(err) = self.core_ctrl.set_switch_state(&resolve_spaces(switch_name), new_state, delay).await {
             match err.downcast_ref::<BeelayCoreError>() {
                 Some(err) => {
                     if err.get_type() == BeelayCoreErrorType::InvalidSwitch {

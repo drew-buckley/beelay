@@ -7,7 +7,7 @@ use std::{error::Error, fmt};
 use std::collections::HashMap;
 use tokio;
 use tokio::sync::mpsc;
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::common::{build_message_link_transactor, str_to_switch_state, str_to_switch_status, switch_state_to_str, switch_status_to_str, MessageLink, MessageLinkTransactor, SwitchState, SwitchStatus};
 use crate::mqtt_client::MqttClientCtrl;
@@ -221,7 +221,7 @@ impl BeelayCore {
             let resp;
             match msg_link.get_message() {
                 Command::Ping => {
-                    debug!("Pong");
+                    trace!("Pong");
                     resp = CommandResponse::Ack
                 },
                 Command::Get { switch_name } => {
@@ -233,7 +233,6 @@ impl BeelayCore {
                             resp = CommandResponse::Error { error: err.to_string() }
                         }
                     };
-                    
                 }
                 Command::Set { switch_name, state, delay } => {
                     info!("Setting {} to {} (delay {}s)", switch_name, state, delay);

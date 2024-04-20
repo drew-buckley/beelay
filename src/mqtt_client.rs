@@ -2,7 +2,7 @@ use std::{collections::{HashMap, LinkedList}, error::Error, fmt, time::Duration}
 use tokio::{self, time::Instant};
 use tokio::sync::mpsc;
 use rumqttc::{MqttOptions, AsyncClient, QoS, Event};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::common::{build_message_link_transactor, str_to_switch_state, switch_state_to_str, MessageLink, MessageLinkTransactor, SwitchState};
 
@@ -144,7 +144,7 @@ impl MqttClientSimulator {
                 let resp;
                 match msg_link.get_message() {
                     Command::Ping => {
-                        debug!("Pong");
+                        trace!("Pong");
                         resp = CommandResponse::Ack;
                     },
                     Command::Set { switch_name, state } => {
@@ -170,20 +170,22 @@ impl MqttClientSimulator {
                 let elapsed = instant.elapsed();
                 if elapsed > self.state_update_interval {
                     let state_senders = state_senders.clone();
+                    if self.state_map.len() > 0 {
                     let state_update_sub_interval = self.state_update_interval / self.state_map.len() as u32; 
-                    let state_map = self.state_map.clone();
-                    tokio::spawn(async move {
-                        let state_senders = state_senders;
-                        for (name, state) in state_map {
-                            for state_sender in &state_senders {
-                                if let Err(err) = state_sender.send((name.clone(), state.clone())).await {
-                                    error!("Failed to send state update ({}, {}) because of {}", name, state, err);
+                        let state_map = self.state_map.clone();
+                        tokio::spawn(async move {
+                            let state_senders = state_senders;
+                            for (name, state) in state_map {
+                                for state_sender in &state_senders {
+                                    if let Err(err) = state_sender.send((name.clone(), state.clone())).await {
+                                        error!("Failed to send state update ({}, {}) because of {}", name, state, err);
+                                    }
                                 }
-                            }
 
-                            tokio::time::sleep(state_update_sub_interval).await;
-                        }
-                    });
+                                tokio::time::sleep(state_update_sub_interval).await;
+                            }
+                        });
+                    }
 
                     instant = Instant::now();
                 }
@@ -283,7 +285,7 @@ impl MqttClient {
                     let resp;
                     match msg_link.get_message() {
                         Command::Ping => {
-                            debug!("Pong");
+                            trace!("Pong");
                             resp = CommandResponse::Ack;
                         },
                         Command::Set { switch_name, state } => {
