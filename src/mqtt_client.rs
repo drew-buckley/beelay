@@ -254,7 +254,9 @@ impl MqttClient {
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
         for switch in &self.switch_names{
-            client.subscribe(format!("{}/{}", self.base_topic, switch), QoS::AtMostOnce).await?;
+            let topic = format!("{}/{}", self.base_topic, switch);
+            debug!("Subscribing to {}", topic);
+            client.subscribe(topic, QoS::AtMostOnce).await?;
         }
 
         info!("MQTT broker connected!");
