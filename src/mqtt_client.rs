@@ -253,11 +253,18 @@ impl MqttClient {
 
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
-        for switch in &self.switch_names{
-            let topic = format!("{}/{}", self.base_topic, switch);
-            debug!("Subscribing to {}", topic);
-            client.subscribe(topic, QoS::AtMostOnce).await?;
-        }
+        // When exceeding 10 subscriptions, the client.subscribe call
+        // appears to hang. Workaround, for now, is to just use a wildcard.
+        //
+        // for switch in &self.switch_names{
+        //     let topic = format!("{}/{}", self.base_topic, switch);
+        //     debug!("Subscribing to {}", topic);
+        //     client.subscribe(topic, QoS::AtMostOnce).await?;
+        // }
+
+        let topic = format!("{}/+", self.base_topic);
+        debug!("Subscribing to {}", topic);
+        client.subscribe(topic, QoS::AtMostOnce).await?;
 
         info!("MQTT broker connected!");
 
