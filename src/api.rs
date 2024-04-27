@@ -9,6 +9,8 @@ const SWITCH_API_ELEM_NAME: &str = "switch";
 const SWITCH_API_STATE_PARAM_NAME: &str = "state";
 const SWITCH_API_DELAY_PARAM_NAME: &str = "delay";
 
+const SWITCHES_API_ELEM_NAME: &str = "switches";
+
 fn generate_response(json: &str, status_code: StatusCode) -> Response<Body> {
     debug!("Generating response; JSON: {}; status code: {}", json, status_code);
     Response::builder()
@@ -22,7 +24,7 @@ fn generate_api_error_respose(error_message: &str, status_code: StatusCode) -> R
         format!("{{\"error_message\":\"{}\"}}", error_message).as_str(), status_code)
 }
 
-fn generate_success_response(switch_state: Option<&str>) -> Response<Body> {
+fn generate_state_success_response(switch_state: Option<&str>) -> Response<Body> {
     let switch_state_str = match switch_state {
         Some(switch_state) => format!(",\"state\":\"{}\"", switch_state),
         None => "".to_string()
@@ -31,7 +33,7 @@ fn generate_success_response(switch_state: Option<&str>) -> Response<Body> {
         format!("{{\"status\":\"success\"{}}}", switch_state_str).as_str(), StatusCode::OK)
 }
 
-fn generate_switch_list_response(switches: &Vec<String>) -> Response<Body> {
+fn generate_switch_list_success_response(switches: &Vec<String>) -> Response<Body> {
     let mut resp_map: HashMap<String, &Vec<String>> = HashMap::new();
     resp_map.insert("switches".to_string(), switches);
     let json = serde_json::to_string(&resp_map)
@@ -80,10 +82,14 @@ impl BeelayApi {
         match top_api_elem.as_str() {
             SWITCH_API_ELEM_NAME => {
                 resp = self.switch_post(&mut api_path, query_params).await?;
-            }
+            },
+            SWITCHES_API_ELEM_NAME => {
+                let message = format!("POST not allowed for /{}", SWITCHES_API_ELEM_NAME);
+                resp = generate_api_error_respose(&message, StatusCode::METHOD_NOT_ALLOWED);
+            },
             _ => {
                 let message = format!("Unknown endpoint element: {}", top_api_elem);
-                return Ok(generate_api_error_respose(&message, StatusCode::NOT_FOUND))
+                resp = generate_api_error_respose(&message, StatusCode::NOT_FOUND);
             }
         }
 
@@ -102,7 +108,10 @@ impl BeelayApi {
         match top_api_elem.as_str() {
             SWITCH_API_ELEM_NAME => {
                 resp = self.switch_get(&mut api_path, query_params).await?;
-            }
+            },
+            SWITCHES_API_ELEM_NAME => {
+                resp = self.switches_get(&mut api_path, query_params).await?;
+            },
             _ => {
                 let message = format!("Unknown endpoint element: {}", top_api_elem);
                 return Ok(generate_api_error_respose(&message, StatusCode::NOT_FOUND))
@@ -116,7 +125,7 @@ impl BeelayApi {
         let switch_name = api_sub_path.pop_front();
         if switch_name.is_none() {
             let switches = self.core_ctrl.get_switches().await?;
-            return Ok(generate_switch_list_response(&switches))
+            return Ok(generate_switch_list_success_response(&switches))
         }
         let switch_name = switch_name.unwrap();
 
@@ -160,7 +169,24 @@ impl BeelayApi {
             None => "unknown".to_string()
         };
 
-        Ok(generate_success_response(Some(&state)))
+        Ok(generate_state_success_response(Some(&state)))
+    }
+
+    pub async fn switches_get(&self, api_sub_path: &mut VecDeque<&String>, _query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
+        if let Some(elem) = api_sub_path.pop_front() {
+            let message = format!("Unknown endpoint element: {}", elem);
+            return Ok(generate_api_error_respose(&message, StatusCode::NOT_FOUND))
+        };
+
+        let switches = match self.core_ctrl.get_switches().await {
+            Ok(switches) => switches,
+            Err(err) => {
+                let message = format!("Internal error: {}", err);
+                return Ok(generate_api_error_respose(&message, StatusCode::INTERNAL_SERVER_ERROR))
+            }
+        };
+
+        Ok(generate_switch_list_success_response(&switches))
     }
 
     async fn switch_post(&self, api_sub_path: &mut VecDeque<&String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
@@ -237,6 +263,6 @@ impl BeelayApi {
             return Ok(generate_api_error_respose(&message, StatusCode::INTERNAL_SERVER_ERROR))
         }
 
-        Ok(generate_success_response(None))
+        Ok(generate_state_success_response(None))
     }
 }

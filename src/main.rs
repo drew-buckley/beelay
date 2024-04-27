@@ -146,7 +146,7 @@ async fn run_beelay() {
             .expect(format!("Failed to create cache directory: {}", cache_dir).as_str());
     }
 
-    let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(switches.clone(), broker_host, broker_port, base_topic, args.simulate);
+    let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
     let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
 
@@ -178,7 +178,7 @@ async fn run_beelay() {
     info!("Beelay done!")
 }
 
-fn launch_mqtt_task(switch_names: Vec<String>, broker_host: String, broker_port: u16, base_topic: String, simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
+fn launch_mqtt_task(broker_host: String, broker_port: u16, base_topic: String, simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
     let mqtt_ctrl;
     let mqtt_task_running = Arc::new(AtomicBool::new(true));
     let mqtt_task_running_clone = Arc::clone(&mqtt_task_running);
@@ -199,7 +199,7 @@ fn launch_mqtt_task(switch_names: Vec<String>, broker_host: String, broker_port:
     else {
         let mqtt_task_running = mqtt_task_running_clone;
         let mut mqtt_client;
-        (mqtt_client, mqtt_ctrl) = build_mqtt_client(switch_names, broker_host, broker_port, base_topic, 64);
+        (mqtt_client, mqtt_ctrl) = build_mqtt_client(broker_host, broker_port, base_topic, 64);
         tokio::spawn(async move {
             if let Err(err) = mqtt_client.run().await {
                 error!("MQTT client crashed: {}", err);

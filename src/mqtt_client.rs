@@ -75,7 +75,7 @@ pub fn build_mqtt_simulation_client(state_update_interval: Duration, msg_queue_c
     (sim, ctrl)
 }
 
-pub fn build_mqtt_client(switch_names: Vec<String>, host: String, port: u16, base_topic: String, msg_queue_cap: usize) -> (MqttClient, MqttClientCtrl) {
+pub fn build_mqtt_client(host: String, port: u16, base_topic: String, msg_queue_cap: usize) -> (MqttClient, MqttClientCtrl) {
     let (mlt, rx) = build_message_link_transactor(msg_queue_cap);
     let (state_link_tx, state_link_rx) = mpsc::channel(32);
 
@@ -90,7 +90,7 @@ pub fn build_mqtt_client(switch_names: Vec<String>, host: String, port: u16, bas
         base_topic: base_topic,
         host: host,
         port: port,
-        switch_names: switch_names
+        // switch_names: switch_names
     };
 
     (client, ctrl)
@@ -227,7 +227,7 @@ async fn process_notification(event: Event, base_topic: &str) -> Result<Option<(
 pub struct MqttClient {
     command_rx: mpsc::Receiver<MessageLink<Command, CommandResponse>>,
     state_link_rx: mpsc::Receiver<mpsc::Sender<(String, SwitchState)>>,
-    switch_names: Vec<String>,
+    // switch_names: Vec<String>,
     host: String,
     port: u16, 
     base_topic: String
