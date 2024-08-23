@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 use std::io::Write;
@@ -15,6 +16,7 @@ use beelay::mqtt_client::MqttClientCtrl;
 use beelay::service::build_service;
 use beelay::service::BeelayServiceCtrl;
 use clap::Parser;
+use indexmap::IndexMap;
 use serde::Deserialize;
 use tokio::fs;
 use log::{error, info, warn};
@@ -41,7 +43,9 @@ struct Service {
 #[derive(Deserialize, Clone)]
 struct Config {
     mqttbroker: Option<MqttBroker>,
-    service: Option<Service>
+    service: Option<Service>,
+    filters: Option<HashMap<String, String>>,
+    pretty_names: Option<IndexMap<String, String>>
 }
 
 #[derive(Parser, Debug)]
@@ -146,9 +150,20 @@ async fn run_beelay() {
             .expect(format!("Failed to create cache directory: {}", cache_dir).as_str());
     }
 
+    let filters = HashMap::new();
+    if let Some(filter_strs) = config.filters {
+        for (filter_name, filter_list) in filter_strs {
+            let mut switches: Vec<String> = Vec::new();
+            for switch in filter_list.split(',') {
+                switches.push(switch.to_string())
+            }
+            filters.insert(filter_name, switches);
+        }
+    }
+
     let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
-    let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
+    let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port, &filters, &config.pretty_names);
 
     let should_run = Arc::new(AtomicBool::new(true));
     launch_signal_monitor(&service_ctrl, &service_task_running, &core_ctrl, &core_task_running, &mqtt_ctrl, &mqtt_task_running, &should_run, args.sd_notify);
@@ -212,7 +227,11 @@ fn launch_mqtt_task(broker_host: String, broker_port: u16, base_topic: String, s
     (mqtt_ctrl, mqtt_task_running)
 }
 
-fn launch_core_task(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctrl: MqttClientCtrl) -> (BeelayCoreCtrl, Arc<AtomicBool>) {
+fn launch_core_task(
+    switch_names: &Vec<String>,
+    switch_cache_dir: &str,
+    mqtt_ctrl: MqttClientCtrl
+) -> (BeelayCoreCtrl, Arc<AtomicBool>) {
     let (mut core, core_ctrl) = build_core(switch_names, switch_cache_dir, mqtt_ctrl.clone(), 64);
     let core_task_running = Arc::new(AtomicBool::new(true));
     let core_task_running_clone = Arc::clone(&core_task_running);
@@ -228,8 +247,15 @@ fn launch_core_task(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctr
     (core_ctrl, core_task_running)
 }
 
-fn launch_service_task(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address: &str, port: &u16) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
-    let (mut service, service_ctrl) = build_service(core_ctrl.clone(), &switches, address, port, 64);
+fn launch_service_task(
+    core_ctrl: BeelayCoreCtrl,
+    switches: &Vec<String>,
+    address: &str,
+    port: &u16,
+    filter_map: &HashMap<String, Vec<String>>,
+    pretty_map: &Option<IndexMap<String, String>>
+) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
+    let (mut service, service_ctrl) = build_service(core_ctrl.clone(), &switches, address, port, filter_map, pretty_map, 64);
     let service_task_running = Arc::new(AtomicBool::new(true));
     let service_task_running_clone = Arc::clone(&service_task_running);
     tokio::spawn(async move {

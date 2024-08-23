@@ -23,6 +23,7 @@ rumqttc = "0.23"
 async-channel = "2.1"
 libsystemd = {version = "0.7", optional = true}
 const_format = "0.2"
+indexmap="2"
 
 [features]
 default = []

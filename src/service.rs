@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::atomic::AtomicBool;
@@ -6,6 +6,7 @@ use std::time::Duration;
 use std::{sync::Arc, error::Error, net::SocketAddr};
 use std::sync::atomic::Ordering::Relaxed;
 
+use indexmap::IndexMap;
 use log::{debug, error, info};
 
 use hyper::{Body, Request, Response, Server, StatusCode};
@@ -234,7 +235,15 @@ pub struct BeelayService {
     should_run: Arc<AtomicBool>
 }
 
-pub fn build_service(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address: &str, port: &u16, msg_queue_cap: usize) -> (BeelayService, BeelayServiceCtrl) {
+pub fn build_service(
+    core_ctrl: BeelayCoreCtrl,
+    switches: &Vec<String>,
+    address: &str,
+    port: &u16,
+    filter_map: &HashMap<String, Vec<String>>,
+    pretty_map: &Option<IndexMap<String, String>>,
+    msg_queue_cap: usize
+) -> (BeelayService, BeelayServiceCtrl) {
     let (mlt, rx) = build_message_link_transactor(msg_queue_cap);
 
     let ctrl = BeelayServiceCtrl {
@@ -242,7 +251,7 @@ pub fn build_service(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address:
     };
 
     let api = Arc::new(BeelayApi::new(core_ctrl.clone()));
-    let frontend = Arc::new(BeelayFrontend::new(&switches));
+    let frontend = Arc::new(BeelayFrontend::new(&switches, pretty_map, filter_map));
 
     let req_sender : async_channel::Sender<Request<Body>>;
     let req_receiver : async_channel::Receiver<Request<Body>>;
