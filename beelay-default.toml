@@ -8,3 +8,6 @@ cache_dir = "/run/beelay"
 host = "127.0.0.1"
 port = 1883
 topic = "zigbee2mqtt"
+
+[client]
+#pretty_names_config = "/etc/beelay/pretty-names.json"

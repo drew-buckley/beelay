@@ -1,4 +1,4 @@
-use std::{error::Error, collections::{VecDeque, HashMap}};
+use std::{collections::{HashMap, VecDeque}, error::Error};
 use hyper::{Response, Body, StatusCode};
 use log::debug;
 
@@ -53,25 +53,35 @@ fn process_button_template(id: &str, label: &str, post_on_url: &str, post_off_ur
     process_template(HTML_BUTTON_ELEM_TEMPLATE, &sub_map)
 }
 
+fn generate_frontend_body(switch_names: &Vec<String>, pretty_names: &HashMap<String, String>) -> String {
+    let mut button_elems = Vec::with_capacity(switch_names.len());
+    for switch_name in switch_names {
+        let id = switch_name.replace(' ', "_").to_lowercase();
+        let post_on_url = format!("/api/switch/{}/?state=on", switch_name);
+        let post_off_url = format!("/api/switch/{}/?state=off", switch_name);
+        let get_url = format!("/api/switch/{}", switch_name);
+
+        let display_switch_name = match pretty_names.get(switch_name) {
+            Some(name) => name,
+            None => switch_name
+        };
+        button_elems.push(
+            process_button_template(&id, &display_switch_name, &post_on_url, &post_off_url, &get_url));
+    }
+
+    process_gui_template("", &button_elems.join("\n"), PATH_CSS_MAIN_PATH)
+}
+
 pub struct BeelayFrontend {
-    frontend_body: String
+    switch_names: Vec<String>,
+    pretty_names: HashMap<String, String>
 }
 
 impl BeelayFrontend {
-    pub fn new(switch_names: &Vec<String>) -> BeelayFrontend {
-        let mut button_elems = Vec::with_capacity(switch_names.len());
-        for switch_name in switch_names {
-            let id = switch_name.replace(' ', "_").to_lowercase();
-            let post_on_url = format!("/api/switch/{}/?state=on", switch_name);
-            let post_off_url = format!("/api/switch/{}/?state=off", switch_name);
-            let get_url = format!("/api/switch/{}", switch_name);
-
-            button_elems.push(
-                process_button_template(&id, &switch_name, &post_on_url, &post_off_url, &get_url));
-        }
-        let button_elem_str = button_elems.join("\n");
+    pub fn new(switch_names: &Vec<String>, pretty_names: HashMap<String, String>) -> BeelayFrontend {
         BeelayFrontend { 
-            frontend_body: process_gui_template("", &button_elem_str, PATH_CSS_MAIN_PATH) 
+            switch_names: switch_names.clone(),
+            pretty_names
         }
     }
 
@@ -87,7 +97,9 @@ impl BeelayFrontend {
                 };
             },
             None => {
-                return Ok(generate_frontend_response(&self.frontend_body));
+                return Ok(
+                    generate_frontend_response(
+                        &generate_frontend_body(&self.switch_names, &self.pretty_names)));
             }
         }
     }

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 use std::io::Write;
@@ -39,9 +40,15 @@ struct Service {
 }
 
 #[derive(Deserialize, Clone)]
+struct Client {
+    pretty_names_config: Option<String>
+}
+
+#[derive(Deserialize, Clone)]
 struct Config {
     mqttbroker: Option<MqttBroker>,
-    service: Option<Service>
+    service: Option<Service>,
+    client: Option<Client>
 }
 
 #[derive(Parser, Debug)]
@@ -129,6 +136,21 @@ async fn run_beelay() {
     let broker_port = broker_config.port.unwrap();
     let base_topic = broker_config.topic.unwrap();
 
+    let pretty_names: HashMap<String, String> = match config.client {
+        Some(client) => {
+            if let Some(pretty_names_config) = client.pretty_names_config {
+                let pretty_names = std::fs::read_to_string(&pretty_names_config)
+                    .expect("Failed to load pretty names config file");
+                serde_json::from_str(&pretty_names)
+                    .expect("Failed to parse pretty names JSON")
+            }
+            else {
+                HashMap::new()
+            }
+        },
+        None => HashMap::new()
+    };
+
     let mut switches: Vec<String> = Vec::new();
     let switches_str = service_config.switches;
     if switches_str.is_some() {
@@ -148,11 +170,19 @@ async fn run_beelay() {
 
     let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
-    let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port);
+    let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port, pretty_names);
 
     let should_run = Arc::new(AtomicBool::new(true));
-    launch_signal_monitor(&service_ctrl, &service_task_running, &core_ctrl, &core_task_running, &mqtt_ctrl, &mqtt_task_running, &should_run, args.sd_notify);
-    
+    launch_signal_monitor(
+        &service_ctrl,
+        &service_task_running,
+        &core_ctrl,
+        &core_task_running,
+        &mqtt_ctrl,
+        &mqtt_task_running,
+        &should_run, 
+        args.sd_notify);
+
     if args.sd_notify {
         notify_systemd_ready();
     }
@@ -178,7 +208,12 @@ async fn run_beelay() {
     info!("Beelay done!")
 }
 
-fn launch_mqtt_task(broker_host: String, broker_port: u16, base_topic: String, simulate: bool) -> (MqttClientCtrl, Arc<AtomicBool>) {
+fn launch_mqtt_task(
+    broker_host: String,
+    broker_port: u16,
+    base_topic: String,
+    simulate: bool
+) -> (MqttClientCtrl, Arc<AtomicBool>) {
     let mqtt_ctrl;
     let mqtt_task_running = Arc::new(AtomicBool::new(true));
     let mqtt_task_running_clone = Arc::clone(&mqtt_task_running);
@@ -212,7 +247,11 @@ fn launch_mqtt_task(broker_host: String, broker_port: u16, base_topic: String, s
     (mqtt_ctrl, mqtt_task_running)
 }
 
-fn launch_core_task(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctrl: MqttClientCtrl) -> (BeelayCoreCtrl, Arc<AtomicBool>) {
+fn launch_core_task(
+    switch_names: &Vec<String>,
+    switch_cache_dir: &str,
+    mqtt_ctrl: MqttClientCtrl
+) -> (BeelayCoreCtrl, Arc<AtomicBool>) {
     let (mut core, core_ctrl) = build_core(switch_names, switch_cache_dir, mqtt_ctrl.clone(), 64);
     let core_task_running = Arc::new(AtomicBool::new(true));
     let core_task_running_clone = Arc::clone(&core_task_running);
@@ -228,8 +267,21 @@ fn launch_core_task(switch_names: &Vec<String>, switch_cache_dir: &str, mqtt_ctr
     (core_ctrl, core_task_running)
 }
 
-fn launch_service_task(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, address: &str, port: &u16) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
-    let (mut service, service_ctrl) = build_service(core_ctrl.clone(), &switches, address, port, 64);
+fn launch_service_task(
+    core_ctrl: BeelayCoreCtrl,
+    switches: &Vec<String>,
+    address: &str,
+    port: &u16,
+    pretty_names: HashMap<String, String>
+) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
+    let (mut service, service_ctrl) = build_service(
+        core_ctrl.clone(),
+        &switches,
+        address,
+        port,
+        64,
+        pretty_names);
+
     let service_task_running = Arc::new(AtomicBool::new(true));
     let service_task_running_clone = Arc::clone(&service_task_running);
     tokio::spawn(async move {
@@ -244,14 +296,16 @@ fn launch_service_task(core_ctrl: BeelayCoreCtrl, switches: &Vec<String>, addres
     (service_ctrl, service_task_running)
 }
 
-fn launch_signal_monitor(service_ctrl: &BeelayServiceCtrl,
-                         service_task_running: &Arc<AtomicBool>,
-                         core_ctrl: &BeelayCoreCtrl,
-                         core_task_running: &Arc<AtomicBool>,
-                         mqtt_ctrl: &MqttClientCtrl,
-                         mqtt_task_running: &Arc<AtomicBool>,
-                         should_run: &Arc<AtomicBool>,
-                         sd_notify: bool) {
+fn launch_signal_monitor(
+    service_ctrl: &BeelayServiceCtrl,
+    service_task_running: &Arc<AtomicBool>,
+    core_ctrl: &BeelayCoreCtrl,
+    core_task_running: &Arc<AtomicBool>,
+    mqtt_ctrl: &MqttClientCtrl,
+    mqtt_task_running: &Arc<AtomicBool>,
+    should_run: &Arc<AtomicBool>,
+    sd_notify: bool
+) {
     let service_ctrl = service_ctrl.clone();
     let service_task_running = Arc::clone(service_task_running);
     let core_ctrl = core_ctrl.clone();
@@ -399,7 +453,18 @@ async fn apply_external_config(config: &Config, external_config_path: &str) -> C
             }
         }
 
-        new_config = Config{ service: Some(service), mqttbroker: Some(mqttbroker) };
+        let mut client = config.client.clone().unwrap();
+        if let Some(loaded_client) = loaded_config.client {
+            if let Some(pretty_names_config) = loaded_client.pretty_names_config {
+                client.pretty_names_config = Some(pretty_names_config);
+            }
+        }
+
+        new_config = Config{ 
+            service: Some(service),
+            mqttbroker: Some(mqttbroker),
+            client: Some(client)
+        };
     }
     else {
         warn!("Configuration file, {}, does not exist; using default configuration", external_config_path);
@@ -458,5 +523,19 @@ mod tests {
         assert!(broker_config.host.unwrap() == "localhost");
         assert!(broker_config.port.unwrap() == 1883);
         assert!(broker_config.topic.unwrap() == "zigbee2mqtt")
+    }
+
+    #[test]
+    fn test_pretty_names() {
+        let pretty_names = "
+{
+    \"devmon1\" : \"Development Monitor 1\",
+    \"devmon2\" : \"Development Monitor 2\",
+    \"devmon3\" : \"Development Monitor 3\",
+    \"devmon4\" : \"Development Monitor 4\"
+}
+        ";
+
+        let pretty_names: HashMap<String, String> = serde_json::from_str(&pretty_names).unwrap();
     }
 }
