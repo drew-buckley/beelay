@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::env;
+use std::error::Error;
 use std::path::Path;
 use std::io::Write;
 use std::process::exit;
@@ -41,7 +42,8 @@ struct Service {
 
 #[derive(Deserialize, Clone)]
 struct Client {
-    pretty_names_config: Option<String>
+    pretty_names_config: Option<String>,
+    filters_config: Option<String>
 }
 
 #[derive(Deserialize, Clone)]
@@ -136,20 +138,18 @@ async fn run_beelay() {
     let broker_port = broker_config.port.unwrap();
     let base_topic = broker_config.topic.unwrap();
 
-    let pretty_names: HashMap<String, String> = match config.client {
-        Some(client) => {
-            if let Some(pretty_names_config) = client.pretty_names_config {
-                let pretty_names = std::fs::read_to_string(&pretty_names_config)
-                    .expect("Failed to load pretty names config file");
-                serde_json::from_str(&pretty_names)
-                    .expect("Failed to parse pretty names JSON")
-            }
-            else {
-                HashMap::new()
-            }
-        },
-        None => HashMap::new()
-    };
+    let pretty_names: HashMap<String, String>;
+    let filters: HashMap<String, Vec<String>>;
+    if let Some(client) = config.client {
+        pretty_names = load_json_config(&client.pretty_names_config)
+            .expect("Failed to load pretty names JSON config");
+        filters = load_json_config(&client.filters_config)
+            .expect("Failed to load filters JSON config");
+    }
+    else {
+        pretty_names = HashMap::new();
+        filters = HashMap::new();
+    }
 
     let mut switches: Vec<String> = Vec::new();
     let switches_str = service_config.switches;
@@ -170,7 +170,13 @@ async fn run_beelay() {
 
     let (mqtt_ctrl, mqtt_task_running) = launch_mqtt_task(broker_host, broker_port, base_topic, args.simulate);
     let (core_ctrl, core_task_running) = launch_core_task(&switches, &cache_dir, mqtt_ctrl.clone());
-    let (service_ctrl, service_task_running) = launch_service_task(core_ctrl.clone(), &switches, &bind_address, &bind_port, pretty_names);
+    let (service_ctrl, service_task_running) = launch_service_task(
+        core_ctrl.clone(),
+        switches,
+        &bind_address,
+        &bind_port,
+        pretty_names,
+        filters);
 
     let should_run = Arc::new(AtomicBool::new(true));
     launch_signal_monitor(
@@ -269,18 +275,20 @@ fn launch_core_task(
 
 fn launch_service_task(
     core_ctrl: BeelayCoreCtrl,
-    switches: &Vec<String>,
+    switches: Vec<String>,
     address: &str,
     port: &u16,
-    pretty_names: HashMap<String, String>
+    pretty_names: HashMap<String, String>,
+    filters: HashMap<String, Vec<String>>
 ) -> (BeelayServiceCtrl, Arc<AtomicBool>) {
     let (mut service, service_ctrl) = build_service(
         core_ctrl.clone(),
-        &switches,
+        switches,
         address,
         port,
         64,
-        pretty_names);
+        pretty_names,
+        filters);
 
     let service_task_running = Arc::new(AtomicBool::new(true));
     let service_task_running_clone = Arc::clone(&service_task_running);
@@ -458,6 +466,10 @@ async fn apply_external_config(config: &Config, external_config_path: &str) -> C
             if let Some(pretty_names_config) = loaded_client.pretty_names_config {
                 client.pretty_names_config = Some(pretty_names_config);
             }
+
+            if let Some(filters_config) = loaded_client.filters_config {
+                client.filters_config = Some(filters_config);
+            }
         }
 
         new_config = Config{ 
@@ -472,6 +484,20 @@ async fn apply_external_config(config: &Config, external_config_path: &str) -> C
     }
 
     new_config
+}
+
+fn load_json_config<T>(config_path: &Option<String>) -> Result<HashMap<String, T>, Box<dyn Error>>
+where T: for<'a> Deserialize<'a>
+{
+    let config: HashMap<String, T> = match config_path {
+        Some(config_path) => {
+            serde_json::from_str(
+                &std::fs::read_to_string(&config_path)?)?
+        }
+        None => HashMap::new()
+    };
+
+    Ok(config)
 }
 
 #[cfg(feature = "systemd")]

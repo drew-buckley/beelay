@@ -1,12 +1,14 @@
 use std::{collections::{HashMap, VecDeque}, error::Error};
 use hyper::{Response, Body, StatusCode};
-use log::debug;
+use log::{debug, warn};
 
 use crate::common::{GENERIC_404_PAGE, PATH_CSS_DIR, PATH_CSS_MAIN_FILE, PATH_CSS_MAIN_PATH};
 
 const CSS_MAIN: &str = include_str!("frontend-assets/main.css");
 const HTML_GUI_TEMPLATE: &str = include_str!("frontend-assets/gui-template.html.in");
 const HTML_BUTTON_ELEM_TEMPLATE: &str = include_str!("frontend-assets/button-element-template.html.in");
+
+const EMPTY_SWITCH_NAMES: &Vec<String> = &Vec::new();
 
 fn generate_not_found_response() -> Response<Body> {
     debug!("Generating frontend 404 response");
@@ -53,7 +55,10 @@ fn process_button_template(id: &str, label: &str, post_on_url: &str, post_off_ur
     process_template(HTML_BUTTON_ELEM_TEMPLATE, &sub_map)
 }
 
-fn generate_frontend_body(switch_names: &Vec<String>, pretty_names: &HashMap<String, String>) -> String {
+fn generate_frontend_body(
+    switch_names: &Vec<String>,
+    pretty_names: &HashMap<String, String>
+) -> String {
     let mut button_elems = Vec::with_capacity(switch_names.len());
     for switch_name in switch_names {
         let id = switch_name.replace(' ', "_").to_lowercase();
@@ -74,18 +79,40 @@ fn generate_frontend_body(switch_names: &Vec<String>, pretty_names: &HashMap<Str
 
 pub struct BeelayFrontend {
     switch_names: Vec<String>,
-    pretty_names: HashMap<String, String>
+    pretty_names: HashMap<String, String>,
+    filters: HashMap<String, Vec<String>>
 }
 
 impl BeelayFrontend {
-    pub fn new(switch_names: &Vec<String>, pretty_names: HashMap<String, String>) -> BeelayFrontend {
+    pub fn new(
+        switch_names: Vec<String>,
+        pretty_names: HashMap<String, String>,
+        proposed_filters: HashMap<String, Vec<String>>
+    ) -> BeelayFrontend {
+        let mut filters = HashMap::with_capacity(proposed_filters.len());
+        for (filter_name, proposed_filter) in &proposed_filters {
+            let mut filter = Vec::with_capacity(proposed_filter.len());
+            for switch_name in proposed_filter {
+                if switch_names.contains(switch_name) {
+                    filter.push(switch_name.clone());
+                }
+                else {
+                    warn!("Switch name, \"{}\", in filter, \"{}\", not in master list; excluding",
+                        switch_name, filter_name);
+                }
+            }
+
+            filters.insert(filter_name.clone(), filter);
+        }
+
         BeelayFrontend { 
             switch_names: switch_names.clone(),
-            pretty_names
+            pretty_names,
+            filters
         }
     }
 
-    pub async fn handle_hit(&self, gui_sub_path: &Vec<String>, _query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
+    pub async fn handle_hit(&self, gui_sub_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
         let mut gui_sub_path = VecDeque::from_iter(gui_sub_path);
         match gui_sub_path.pop_front() {
             Some(sub_elem) => {
@@ -97,9 +124,16 @@ impl BeelayFrontend {
                 };
             },
             None => {
+                let switch_names = match query_params.iter().position(|(key, _)| key == "filter") {
+                    Some(i) => {
+                        let (_, filter) = &query_params[i];
+                        self.filters.get(filter).unwrap_or(EMPTY_SWITCH_NAMES)
+                    }
+                    None => &self.switch_names
+                };
                 return Ok(
                     generate_frontend_response(
-                        &generate_frontend_body(&self.switch_names, &self.pretty_names)));
+                        &generate_frontend_body(switch_names, &self.pretty_names)));
             }
         }
     }

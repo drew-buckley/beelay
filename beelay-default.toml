@@ -11,3 +11,4 @@ topic = "zigbee2mqtt"
 
 [client]
 #pretty_names_config = "/etc/beelay/pretty-names.json"
+#filter_config = "/etc/beelay/filters.json"

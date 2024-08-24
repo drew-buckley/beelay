@@ -236,11 +236,12 @@ pub struct BeelayService {
 
 pub fn build_service(
     core_ctrl: BeelayCoreCtrl,
-    switches: &Vec<String>,
+    switches: Vec<String>,
     address: &str,
     port: &u16,
     msg_queue_cap: usize,
-    pretty_names: HashMap<String, String>
+    pretty_names: HashMap<String, String>,
+    filters: HashMap<String, Vec<String>>
 ) -> (BeelayService, BeelayServiceCtrl) {
     let (mlt, rx) = build_message_link_transactor(msg_queue_cap);
 
@@ -249,7 +250,7 @@ pub fn build_service(
     };
 
     let api = Arc::new(BeelayApi::new(core_ctrl.clone()));
-    let frontend = Arc::new(BeelayFrontend::new(&switches, pretty_names));
+    let frontend = Arc::new(BeelayFrontend::new(switches, pretty_names, filters));
 
     let req_sender : async_channel::Sender<Request<Body>>;
     let req_receiver : async_channel::Receiver<Request<Body>>;
