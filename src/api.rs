@@ -1,5 +1,6 @@
-use std::{error::Error, collections::{VecDeque, HashMap}};
+use std::{collections::{HashMap, VecDeque}, error::Error};
 use hyper::{Response, Body, StatusCode, Method};
+use serde::Serialize;
 use serde_json;
 use log::debug;
 
@@ -33,11 +34,17 @@ fn generate_state_success_response(switch_state: Option<&str>) -> Response<Body>
         format!("{{\"status\":\"success\"{}}}", switch_state_str).as_str(), StatusCode::OK)
 }
 
-fn generate_switch_list_success_response(switches: &Vec<String>) -> Response<Body> {
-    let mut resp_map: HashMap<String, &Vec<String>> = HashMap::new();
-    resp_map.insert("switches".to_string(), switches);
-    let json = serde_json::to_string(&resp_map)
-        .expect("Unable to serial switch list");
+fn generate_switch_list_success_response(switches: &Vec<String>, pretty_names: &HashMap<String, String>) -> Response<Body> {
+    #[derive(Serialize)]
+    struct Response<'a> {
+        switches: &'a Vec<String>,
+        pretty_names: &'a HashMap<String, String>
+    }
+
+    let json = serde_json::to_string(&Response {
+        switches,
+        pretty_names
+    }).expect("Unable to serial switch list");
 
     generate_response(&json, StatusCode::OK)
 }
@@ -47,12 +54,13 @@ fn resolve_spaces(s: &str) -> String {
 }
 
 pub struct BeelayApi {
-    core_ctrl: BeelayCoreCtrl
+    core_ctrl: BeelayCoreCtrl,
+    pretty_names: HashMap<String, String>
 }
 
 impl BeelayApi {
-    pub fn new(core_ctrl: BeelayCoreCtrl) -> BeelayApi {
-        BeelayApi{ core_ctrl: core_ctrl }
+    pub fn new(core_ctrl: BeelayCoreCtrl, pretty_names: HashMap<String, String>) -> BeelayApi {
+        BeelayApi{ core_ctrl, pretty_names }
     }
 
     pub async fn handle_hit(&self, method: &Method, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
@@ -125,7 +133,7 @@ impl BeelayApi {
         let switch_name = api_sub_path.pop_front();
         if switch_name.is_none() {
             let switches = self.core_ctrl.get_switches().await?;
-            return Ok(generate_switch_list_success_response(&switches))
+            return Ok(generate_switch_list_success_response(&switches, &self.pretty_names))
         }
         let switch_name = switch_name.unwrap();
 
@@ -186,7 +194,7 @@ impl BeelayApi {
             }
         };
 
-        Ok(generate_switch_list_success_response(&switches))
+        Ok(generate_switch_list_success_response(&switches, &self.pretty_names))
     }
 
     async fn switch_post(&self, api_sub_path: &mut VecDeque<&String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {

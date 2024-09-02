@@ -249,7 +249,7 @@ pub fn build_service(
         msg_link_transactor: mlt
     };
 
-    let api = Arc::new(BeelayApi::new(core_ctrl.clone()));
+    let api = Arc::new(BeelayApi::new(core_ctrl.clone(), pretty_names.clone()));
     let frontend = Arc::new(BeelayFrontend::new(switches, pretty_names, filters));
 
     let req_sender : async_channel::Sender<Request<Body>>;
