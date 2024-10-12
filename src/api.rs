@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json;
 use log::debug;
 
-use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState}, core::{BeelayCoreCtrl, BeelayCoreError, BeelayCoreErrorType}};
+use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState, SwitchStatus}, core::{BeelayCoreCtrl, BeelayCoreError, BeelayCoreErrorType}};
 
 const SWITCH_API_ELEM_NAME: &str = "switch";
 const SWITCH_API_STATE_PARAM_NAME: &str = "state";
@@ -22,16 +22,20 @@ fn generate_response(json: &str, status_code: StatusCode) -> Response<Body> {
 
 fn generate_api_error_respose(error_message: &str, status_code: StatusCode) -> Response<Body> {
     generate_response(
-        format!("{{\"error_message\":\"{}\"}}", error_message).as_str(), status_code)
+        format!("{{\"status\":\"error\",\"error_message\":\"{}\"}}", error_message).as_str(), status_code)
 }
 
-fn generate_state_success_response(switch_state: Option<&str>) -> Response<Body> {
+fn generate_state_success_response(switch_state: Option<&str>, transitioning: Option<bool>) -> Response<Body> {
     let switch_state_str = match switch_state {
         Some(switch_state) => format!(",\"state\":\"{}\"", switch_state),
         None => "".to_string()
     };
+    let transitioning_str = match transitioning {
+        Some(switch_state) => format!(",\"transitioning\":\"{}\"", switch_state.to_string()),
+        None => "".to_string()
+    };
     generate_response(
-        format!("{{\"status\":\"success\"{}}}", switch_state_str).as_str(), StatusCode::OK)
+        format!("{{\"status\":\"success\"{}{}}}", switch_state_str, transitioning_str).as_str(), StatusCode::OK)
 }
 
 fn generate_switch_list_success_response(switches: &Vec<String>, pretty_names: &HashMap<String, String>) -> Response<Body> {
@@ -146,7 +150,7 @@ impl BeelayApi {
             None => {}
         }
         
-        let (state, _) = match self.core_ctrl.get_switch_state(&resolve_spaces(&switch_name)).await {
+        let (state, status) = match self.core_ctrl.get_switch_state(&resolve_spaces(&switch_name)).await {
             Ok(state) => state,
             Err(err) => {
                 match err.downcast_ref::<BeelayCoreError>() {
@@ -177,7 +181,12 @@ impl BeelayApi {
             None => "unknown".to_string()
         };
 
-        Ok(generate_state_success_response(Some(&state)))
+        let transitioning = match status {
+            SwitchStatus::Confirmed => false,
+            SwitchStatus::Transitioning => true
+        };
+
+        Ok(generate_state_success_response(Some(&state), Some(transitioning)))
     }
 
     pub async fn switches_get(&self, api_sub_path: &mut VecDeque<&String>, _query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
@@ -271,6 +280,6 @@ impl BeelayApi {
             return Ok(generate_api_error_respose(&message, StatusCode::INTERNAL_SERVER_ERROR))
         }
 
-        Ok(generate_state_success_response(None))
+        Ok(generate_state_success_response(None, None))
     }
 }
