@@ -280,6 +280,14 @@ impl BeelayApi {
             return Ok(generate_api_error_respose(&message, StatusCode::INTERNAL_SERVER_ERROR))
         }
 
-        Ok(generate_state_success_response(None, None))
+        let new_state = match switch_state_to_str(new_state) {
+            Ok(state) => state,
+            Err(err) => {
+                let message = format!("Internal error: {}", err);
+                return Ok(generate_api_error_respose(&message, StatusCode::INTERNAL_SERVER_ERROR))
+            }
+        };
+
+        Ok(generate_state_success_response(Some(&new_state), Some(true)))
     }
 }
