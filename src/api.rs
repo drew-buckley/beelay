@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json;
 use log::debug;
 
-use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState, SwitchStatus}, core::{BeelayCoreCtrl, BeelayCoreError, BeelayCoreErrorType}};
+use crate::{common::{str_to_switch_state, switch_state_to_str, SwitchState, SwitchStatus}, core::{BeelayCoreCtrl, BeelayCoreError, BeelayCoreErrorType}, refine_filters};
 
 const SWITCH_API_ELEM_NAME: &str = "switch";
 const SWITCH_API_STATE_PARAM_NAME: &str = "state";
@@ -38,16 +38,22 @@ fn generate_state_success_response(switch_state: Option<&str>, transitioning: Op
         format!("{{\"status\":\"success\"{}{}}}", switch_state_str, transitioning_str).as_str(), StatusCode::OK)
 }
 
-fn generate_switch_list_success_response(switches: &Vec<String>, pretty_names: &HashMap<String, String>) -> Response<Body> {
+fn generate_switch_list_success_response(
+    switches: &Vec<String>,
+    pretty_names: &HashMap<String, String>,
+    filters: &HashMap<String, Vec<String>>
+) -> Response<Body> {
     #[derive(Serialize)]
     struct Response<'a> {
         switches: &'a Vec<String>,
-        pretty_names: &'a HashMap<String, String>
+        pretty_names: &'a HashMap<String, String>,
+        filters: &'a HashMap<String, Vec<String>>
     }
 
     let json = serde_json::to_string(&Response {
         switches,
-        pretty_names
+        pretty_names,
+        filters
     }).expect("Unable to serial switch list");
 
     generate_response(&json, StatusCode::OK)
@@ -59,12 +65,23 @@ fn resolve_spaces(s: &str) -> String {
 
 pub struct BeelayApi {
     core_ctrl: BeelayCoreCtrl,
-    pretty_names: HashMap<String, String>
+    pretty_names: HashMap<String, String>,
+    filters: HashMap<String, Vec<String>>
 }
 
 impl BeelayApi {
-    pub fn new(core_ctrl: BeelayCoreCtrl, pretty_names: HashMap<String, String>) -> BeelayApi {
-        BeelayApi{ core_ctrl, pretty_names }
+    pub fn new(
+        core_ctrl: BeelayCoreCtrl,
+        pretty_names: HashMap<String, String>,
+        switch_names: &Vec<String>,
+        proposed_filters: &HashMap<String, Vec<String>> // TODO: continue with filters for API; need new endpoint.
+    ) -> BeelayApi {
+        let filters = refine_filters(switch_names, proposed_filters);
+        BeelayApi {
+            core_ctrl,
+            pretty_names,
+            filters
+        }
     }
 
     pub async fn handle_hit(&self, method: &Method, api_path: &Vec<String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {
@@ -137,7 +154,7 @@ impl BeelayApi {
         let switch_name = api_sub_path.pop_front();
         if switch_name.is_none() {
             let switches = self.core_ctrl.get_switches().await?;
-            return Ok(generate_switch_list_success_response(&switches, &self.pretty_names))
+            return Ok(generate_switch_list_success_response(&switches, &self.pretty_names, &self.filters))
         }
         let switch_name = switch_name.unwrap();
 
@@ -203,7 +220,7 @@ impl BeelayApi {
             }
         };
 
-        Ok(generate_switch_list_success_response(&switches, &self.pretty_names))
+        Ok(generate_switch_list_success_response(&switches, &self.pretty_names, &self.filters))
     }
 
     async fn switch_post(&self, api_sub_path: &mut VecDeque<&String>, query_params: &Vec<(String, String)>) -> Result<Response<Body>, Box<dyn Error>> {

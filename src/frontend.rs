@@ -1,8 +1,8 @@
 use std::{collections::{HashMap, VecDeque}, error::Error};
 use hyper::{Response, Body, StatusCode};
-use log::{debug, warn};
+use log::debug;
 
-use crate::common::{GENERIC_404_PAGE, PATH_CSS_DIR, PATH_CSS_MAIN_FILE, PATH_CSS_MAIN_PATH};
+use crate::{common::{GENERIC_404_PAGE, PATH_CSS_DIR, PATH_CSS_MAIN_FILE, PATH_CSS_MAIN_PATH}, refine_filters};
 
 const CSS_MAIN: &str = include_str!("frontend-assets/main.css");
 const HTML_GUI_TEMPLATE: &str = include_str!("frontend-assets/gui-template.html.in");
@@ -87,26 +87,12 @@ impl BeelayFrontend {
     pub fn new(
         switch_names: Vec<String>,
         pretty_names: HashMap<String, String>,
-        proposed_filters: HashMap<String, Vec<String>>
+        proposed_filters: &HashMap<String, Vec<String>>
     ) -> BeelayFrontend {
-        let mut filters = HashMap::with_capacity(proposed_filters.len());
-        for (filter_name, proposed_filter) in &proposed_filters {
-            let mut filter = Vec::with_capacity(proposed_filter.len());
-            for switch_name in proposed_filter {
-                if switch_names.contains(switch_name) {
-                    filter.push(switch_name.clone());
-                }
-                else {
-                    warn!("Switch name, \"{}\", in filter, \"{}\", not in master list; excluding",
-                        switch_name, filter_name);
-                }
-            }
 
-            filters.insert(filter_name.clone(), filter);
-        }
-
+        let filters = refine_filters(&switch_names, proposed_filters);
         BeelayFrontend { 
-            switch_names: switch_names.clone(),
+            switch_names,
             pretty_names,
             filters
         }
