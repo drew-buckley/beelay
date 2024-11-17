@@ -205,7 +205,7 @@ async fn process_notification(event: Event, base_topic: &str) -> Result<Option<(
             match incoming {
                 rumqttc::Packet::Publish(publish) => {
                     let switch_name = &publish.topic[base_topic.len()+1..publish.topic.len()];
-                    info!("Got packet for {}", switch_name);
+                    debug!("Got packet for {}", switch_name);
                     let payload: serde_json::Value = serde_json::from_str(std::str::from_utf8(&publish.payload).unwrap())?;
                     let payload: serde_json::Map<String, serde_json::Value> = payload.as_object().unwrap().clone();
                     if let Some(state_value) = payload.get("state") {
